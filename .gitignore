@@ -1,0 +1,28 @@
+# 本机构建产物、宿主端点、编译任务及用户工程
+/artifacts/
+/projects/
+/dist/
+
+# Python 缓存与本地环境
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 本地配置与凭证（示例配置允许提交）
+.env
+.env.*
+!.env.example
+mcp.local.json
+*.pem
+*.key
+
+# 编辑器及系统临时文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# 过程测试脚本统一存放并排除发布
+/tests/

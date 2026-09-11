@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "fstudio": {
+      "command": "python",
+      "args": [
+        "C:/MCP/FStudio_MCP/server.py",
+        "--workspace",
+        "C:/MCP/FStudio_MCP/projects",
+        "--fstudio-bin",
+        "C:/Program Files (x86)/Flexem/FStudio 3.x/Bin"
+      ]
+    }
+  }
+}

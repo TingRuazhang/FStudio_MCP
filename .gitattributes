@@ -1,0 +1,13 @@
+/artifacts/ export-ignore
+/projects/ export-ignore
+/dist/ export-ignore
+/__pycache__/ export-ignore
+/.venv/ export-ignore
+/.env export-ignore
+/mcp.local.json export-ignore
+*.py text eol=lf
+*.cs text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.ps1 text eol=crlf
+/tests/ export-ignore

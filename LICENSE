@@ -1,30 +1,21 @@
-FStudio_MCP 非商业学习交流许可
-版本 1.0
+MIT License
 
 Copyright (c) 2026 TingRuazhang and FStudio_MCP contributors.
-保留未明确授予的所有权利。
 
-仅供学习交流，请勿用于商业用途。
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-一、适用范围
-本许可适用于本仓库中由本项目版权持有人提供的原创源码及文档（以下简称“本软件”）。另行标明许可的第三方内容不在本许可授权范围内。
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-二、许可的用途
-在遵守本许可全部条件的前提下，允许为个人学习、非商业教学、非商业研究和技术交流使用、复制及修改本软件，并免费分享本软件的源码、修改版本或编译版本。
-
-三、禁止商业用途
-不得将本软件用于商业项目、营利性服务、收费交付、产品销售、商业生产或商业经营活动；不得使用本软件为商业用途生成、开发或交付触摸屏界面，或将本软件集成到用于上述用途的产品及服务中。免费提供访问或服务不当然使其商业目的成为非商业用途。
-
-四、保留声明和修改说明
-分享本软件或其修改版本时，必须保留版权声明及本许可全文，包括禁止商业用途的限制。修改版本必须清楚标明已作修改，不得冒充原作者或厂商官方版本。不得移除非商业限制，也不得向他人授予本许可未授予的权利。
-
-五、第三方权利
-本许可不授予对繁易、FStudio、厂商 DLL、模板、字体、图片、商标及其他第三方内容的任何权利。使用者应自行取得所需授权并遵守相关条款。本项目为独立项目，不代表厂商认可或背书。
-
-六、免责声明
-在适用法律允许的最大范围内，本软件按现状提供，不作适用性、可靠性、无错误或不侵权等明示或默示保证。版权持有人不对使用本软件产生的损失承担责任。AI 生成结果需由使用者自行审查；本许可不承诺其适用于真实设备，也不免除使用者依法应承担的责任。
-
-七、终止
-违反本许可条件时，本许可授予的权利自动终止，应停止未经授权的使用、复制、修改和分享。本许可不限制法律独立赋予且不能由许可排除的权利。
-
-本许可为自定义非商业源码公开许可，不是 MIT 许可，也不是经 OSI 批准的开源许可。
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

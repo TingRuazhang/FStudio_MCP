@@ -10,7 +10,7 @@
 
 - 新增画布快照、批量属性读取、共用属性设置和批量控件创建，减少 AI 逐项调用。
 - 回传原生实际尺寸与调整标记，支持重名诊断、失败清理和布局检查。
-- 提供配套 **Fstudio_skills**，串联原型拆解、公共页面、批量制作与分层验收。
+- 提供 **Fstudio_skills 完整包**：以技能为入口，内置 MCP 源码与构建配置脚本，串联原型拆解、公共页面、批量制作与分层验收。
 
 查看 [完整更新说明与升级步骤](CHANGELOG.md)，或前往 [GitHub Release](https://github.com/TingRuazhang/FStudio_MCP/releases/tag/v2026.09.12) 下载源码和技能包。
 
@@ -98,7 +98,11 @@ cd FStudio_MCP
 
 [Fstudio_skills](skills/fstudio-skills/SKILL.md) 将工艺/原型拆解、公共页面所有权、MCP 工具选择、批量制作和分层验收连成可执行流程，适用于不同 HMI 工程。技能中的 `check_layout.py` 只读检查快照的尺寸、对齐、间距和公共组件禁入名单，不修改工程或调用硬件。
 
-将仓库的 `skills/fstudio-skills` 整个目录放入支持该格式的 AI 技能目录；Codex 使用 `~/.codex/skills/fstudio-skills`。调用示例：“使用 $fstudio-skills 根据原型增量修改触摸屏，复用公共页面，并检查布局与原生交互。”详细参考按需加载，无需把整个工具或属性目录发给 AI。
+推荐下载 Release 中的 [Fstudio_skills.zip](https://github.com/TingRuazhang/FStudio_MCP/releases/download/v2026.09.12/Fstudio_skills.zip)：解压后的 `fstudio-skills` 为根目录，`mcp/` 位于技能内部，包含独立运行所需源码。按 [内置 MCP 接入说明](skills/fstudio-skills/references/bundled-mcp.md) 构建并接入客户端；仅加载技能不会自动注册 MCP。
+
+已有独立 MCP 连接时，也可只使用仓库的 `skills/fstudio-skills` 技能目录。Codex 的技能目录为 `~/.codex/skills/fstudio-skills`。调用示例：“使用 $fstudio-skills 根据原型增量修改触摸屏，复用公共页面，并检查布局与原生交互。”详细参考按需加载，无需把整个工具或属性目录发给 AI。
+
+仓库保留现有 MCP 源码结构，技能在 `skills/` 中维护；运行 `python package-skill.py` 可在 `artifacts/skill-delivery/Fstudio_skills.zip` 生成完整发布包，不重复维护两份 MCP 源码，也不附带厂商资源或用户工程。
 
 ## 验证范围与已知限制
 

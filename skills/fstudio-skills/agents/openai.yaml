@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fstudio_skills"
+  short_description: "高效使用 FStudio MCP：批量制作、共享所有权、原生交互与布局验收"
+  default_prompt: "使用 $fstudio-skills 根据实际工艺、点表和原型，通过 MCP 批量制作或增量修复 HMI，并回读布局、分层验收。"

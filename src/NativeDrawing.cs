@@ -165,18 +165,53 @@ namespace FStudioMcp {
     "graphic_type",item.GetType().FullName,"comment",Member(item,"Comment"),"page_uuid",PageUuid(page).ToString(),
     "dirty",Member(view,"IsDirty"),"native_undo_transaction",true,"persistence","save_project_to_persist","runtime","not_executed");
   }
-  /// <summary>在当前原生页面管理绘图草稿和画布修改；插入使用设计器事务，失败时回滚。</summary>
+  /// <summary>读取当前页顶层图元的紧凑快照，避免逐个读取名称和布局属性。</summary>
+  /// <param name="a">可选的精确名称列表、分页参数及当前页 UUID 断言。</param>
+  /// <param name="view">用于绑定返回句柄作用域的当前原生设计页。</param>
+  /// <param name="page">当前页模型；不合成公共层，不遍历组合图元子对象。</param>
+  /// <returns>页面身份、尺寸、分页控件、缺失和重名诊断；读取不修改页面内容。</returns>
+  /// <exception cref="ArgumentException">分页、名称或页面 UUID 不符合预期。</exception>
+  static object CanvasSnapshot(Dictionary<string,object> a,object view,object page){
+   Guid uuid=PageUuid(page);
+   if(a.ContainsKey("page_uuid")&&Guid.Parse(S(a,"page_uuid"))!=uuid)throw new ArgumentException("The active page does not match page_uuid");
+   int offset=a.ContainsKey("offset")?Convert.ToInt32(a["offset"]):0,limit=a.ContainsKey("limit")?Convert.ToInt32(a["limit"]):100;
+   if(offset<0||limit<1||limit>100)throw new ArgumentException("Expected offset >= 0 and limit 1..100");
+   string[] names=a.ContainsKey("names")?((IEnumerable)a["names"]).Cast<string>().ToArray():null;
+   if(names!=null&&(names.Length<1||names.Length>100||names.Any(String.IsNullOrEmpty)||names.Distinct(StringComparer.Ordinal).Count()!=names.Length))
+    throw new ArgumentException("Expected 1..100 distinct nonempty names");
+   var filter=names==null?null:new HashSet<string>(names,StringComparer.Ordinal);
+   // 名称只取原生持久化 Comment；列表索引仅用于展示次序，不能作为后续修改身份。
+   var all=((IEnumerable)Member(page,"Graphicses")).Cast<object>().Select((model,index)=>new{Model=model,Index=index,Name=Convert.ToString(Member(model,"Comment"))}).ToArray();
+   var matched=all.Where(item=>filter==null||filter.Contains(item.Name)).ToArray();
+   var duplicates=matched.GroupBy(item=>item.Name,StringComparer.Ordinal).Where(g=>g.Count()>1).ToArray();
+   var found=new HashSet<string>(matched.Select(item=>item.Name),StringComparer.Ordinal);
+   var items=matched.Skip(offset).Take(limit).Select(item=>Obj("model",DescribeOwned(item.Model,view),
+     "uuid",Convert.ToString(Member(item.Model,"UniqueId")),"name",item.Name,"type",item.Model.GetType().FullName,
+     "index",item.Index,"bounds",DrawingBoundsResult(item.Model))).ToArray();
+   // 缺失和重名按完整匹配集计算，不能把分页外的对象误判为不存在。
+   return Obj("page",Obj("uuid",uuid.ToString(),"name",Member(page,"Name"),"type",Convert.ToString(Member(page,"Type")),
+       "width",Member(page,"Width"),"height",Member(page,"Height")),
+     "items",items,"total_count",all.Length,"matched_count",matched.Length,"offset",offset,
+     "next_offset",offset<matched.Length&&items.Length<matched.Length-offset?(object)(offset+items.Length):null,
+     "missing_names",names==null?new string[0]:names.Where(name=>!found.Contains(name)).ToArray(),
+     "duplicate_names",duplicates.Take(100).Select(g=>Obj("name",g.Key,"count",g.Count())).ToArray(),
+     "duplicate_name_count",duplicates.Length,"dirty",Member(view,"IsDirty"),"scope","active_page_top_level_only",
+     "common_composition_included",false,"nested_children_included",false);
+  }
+  /// <summary>在当前原生页面管理绘图草稿、只读快照和画布修改；插入失败时回滚。</summary>
   /// <param name="a">已校验的操作名称、模型句柄、工具参数或插入边界。</param>
   /// <returns>草稿句柄或实际操作结果；修改后的画布需另行保存项目。</returns>
   /// <exception cref="InvalidOperationException">页面、草稿或原生模板状态不满足操作条件。</exception>
   static object DrawingOperation(Dictionary<string,object>a){
    var op=S(a,"op");var view=DesignerView();var page=Member(view,"Model");var context=Member(view,"DesignContext");
    if(op=="drawing_show_canvas")return ShowCanvasWithoutActivation();
+   if(op=="drawing_snapshot")return CanvasSnapshot(a,view,page);
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
    if(op=="drawing_configure_local_address")return ConfigureLocalAddress(a,view);
    if(op=="drawing_configure_trend")return ConfigureTrendSampling(a,view);
    if(op=="drawing_remove_graphic")return RemoveCanvasGraphic(a,view,page);
+   if(op=="drawing_create_many")return CreateCanvasBatch(a,view,page,context);
    if(op=="drawing_prepare"){
     var type=Native(S(a,"tool"));
     if(type.Namespace!="Flexem.Studio.GraphicsDesigner.Tools"||type.IsAbstract||type.ContainsGenericParameters||!type.Name.EndsWith("Tool"))throw new ArgumentException("Expected a concrete native drawing tool");

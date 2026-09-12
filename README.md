@@ -18,7 +18,7 @@
 
 > 创建一个用于学习的电机监控界面，包含标题、启动和停止按钮、状态灯与转速显示。使用本地寄存器，保存到新工程并检查原生编译结果。
 
-完整工具和参数以 MCP `tools/list` 返回的 69 个接口为准。具体控件支持情况见下方验证范围。
+完整工具和参数以 MCP `tools/list` 返回的接口为准。具体控件支持情况见下方验证范围。
 
 ## 环境要求
 
@@ -75,7 +75,8 @@ cd FStudio_MCP
 ## 操作流程
 
 1. 调用 `fstudio_visible_start` 连接或启动宿主，再创建或打开工作区工程。
-2. 使用 `fstudio_canvas_prepare` 创建控件草稿，通过 `fstudio_model_inspect/get/set/set_many` 查询或配置，再调用 `fstudio_canvas_commit` 加入画布；不需要的草稿用 `fstudio_canvas_discard` 清理。
+   接续已有页面时，先用 `fstudio_canvas_snapshot` 获取控件名称、句柄和实际位置；必要时按稳定名称筛选，处理缺失或重名后再修改。
+2. 熟悉的控件优先用 `fstudio_canvas_create_many` 一次创建、配置和插入，并用预设复用样式。首次探索控件仍用 `fstudio_canvas_prepare`、`fstudio_model_inspect` 确认属性，再用 `fstudio_model_get_many` / `fstudio_model_set_many` 按路径批量配置、`fstudio_canvas_commit` 插入；不用的草稿用 `fstudio_canvas_discard` 清理。已有同页控件可用 `fstudio_model_apply_many` 一次应用共用属性。
 3. 返回 `job_id` 时，使用 `fstudio_visible_job` 查询同一任务至终态，不要重复提交写操作。
 4. 调用 `fstudio_visible_save` 保存工程。模型句柄属于当前会话，重开工程后重新获取。
 5. 调用 `fstudio_build_start`，再用 `fstudio_build_status` 查询。检查 `compiler_success`、`cleanup_complete`、`cleanup_errors` 和产物哈希；取消后也应继续查询至终态。
@@ -83,10 +84,19 @@ cd FStudio_MCP
 后台页面接口支持非保留的 Basic 页面；离线编辑前应关闭目标工程。编译使用已保存工程的快照，产物位于 `artifacts/isolated-jobs`，不会覆盖编辑器工程。
 
 数值与文本控件配置见 [配置说明](docs/numeric-background-workflow.md)。
+批量属性路径、调用开销和实测范围见 [高效模型操作](docs/efficient-model-workflow.md)。
+
+## 配套技能
+
+[Fstudio_skills](skills/fstudio-skills/SKILL.md) 将工艺/原型拆解、公共页面所有权、MCP 工具选择、批量制作和分层验收连成可执行流程，适用于不同 HMI 工程。技能中的 `check_layout.py` 只读检查快照的尺寸、对齐、间距和公共组件禁入名单，不修改工程或调用硬件。
+
+将仓库的 `skills/fstudio-skills` 整个目录放入支持该格式的 AI 技能目录；Codex 使用 `~/.codex/skills/fstudio-skills`。调用示例：“使用 $fstudio-skills 根据原型增量修改触摸屏，复用公共页面，并检查布局与原生交互。”详细参考按需加载，无需把整个工具或属性目录发给 AI。
 
 ## 验证范围与已知限制
 
 在 FStudio `3.0.15685.0`、F010 工程上检查了 69 个 MCP 接口：68 个完成代表性成功调用，1 个兼容入口按设计拒绝；全部接口经过非法参数和连接复用检查。
+
+2026-09-12 新增批量路径读写、共用属性和批量绘图优化，验证范围及本地计时单独记录在 [高效模型操作](docs/efficient-model-workflow.md)。批量绘图以五种混合控件验证保存重开、尺寸回读与编译，不据此扩大全部控件或运行模式的覆盖结论。
 
 52 种绘图控件中，42 种通过创建、配置、提交、保存、重开及隔离编译，并通过产物与源工程保护检查。其余结果如下：
 

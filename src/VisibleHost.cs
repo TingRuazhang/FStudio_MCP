@@ -40,7 +40,8 @@ namespace FStudioMcp {
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
+  /// <summary>识别可与编译诊断并存的只读任务，批量读取也不产生日志写入。</summary>
+  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_state"||op=="drawing_snapshot"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
   static Type Native(string name) {foreach(var a in AppDomain.CurrentDomain.GetAssemblies()){var t=a.GetType(name,false);if(t!=null)return t;}throw new ArgumentException("Native type not loaded: "+name);}
   static object ProjectService(string method,params object[] args) {return Native("Flexem.Studio.Project.FsProjectService").GetMethod(method,BindingFlags.Public|BindingFlags.Static).Invoke(null,args);}
   static object CurrentProject() {return Native("Flexem.Studio.Project.FsProjectService").GetProperty("CurrentProject").GetValue(null,null);}
@@ -66,6 +67,7 @@ namespace FStudioMcp {
    }
    return commands;
   }
+  /// <summary>在原生 UI 线程分发任务，保留工程范围、后台操作与编译互斥约束。</summary>
   static object OnUi(Dictionary<string,object> a) {
    string op=S(a,"op");
    lock(buildGate)if(activeBuild!=null&&!activeBuild.Finalized&&!IsReadOnly(op)&&op!="build_cancel")throw new InvalidOperationException("A background build owns the project; wait for its build_id before changing or switching the project");
@@ -76,7 +78,7 @@ namespace FStudioMcp {
    if(op=="output")return Output();
    if(op.StartsWith("drawing_"))return DrawingOperation(a);
    if(op=="create_project")return CreateProject(a);
-   if(op=="inspect_object"||op=="read_member"||op=="set_member"||op=="set_members"||op=="invoke_method"||op=="native_factory")return ModelOperation(a);
+   if(op=="inspect_object"||op=="read_member"||op=="read_members"||op=="set_member"||op=="set_members"||op=="invoke_method"||op=="native_factory")return ModelOperation(a);
    if(op=="commands"){commands=null;return Obj("commands",Commands().OrderBy(x=>x.Key).Select(x=>Obj("command",x.Key,"assembly",x.Value.Assembly.GetName().Name,"status","discovered_not_executed")).ToArray());}
    // 在调用原生打开服务之前校验目录，超长路径不会创建无法应答的模态窗口。
    if(op=="open_project") {string f=Path.GetFullPath(S(a,"file"));Within(f);RequireNativeProjectDirectory(Path.GetDirectoryName(f));if(!File.Exists(f)||Path.GetExtension(f)!=".fsprj")throw new ArgumentException("Expected an existing fsprj");if(String.Equals(ProjectFile(),f,StringComparison.OrdinalIgnoreCase))return Obj("project",f,"already_open",true);ClearRefs();ProjectService("OpenProjectWithPath",f);if(!String.Equals(ProjectFile(),f,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("FStudio did not open the requested project; inspect native dialogs/output");return Obj("project",ProjectFile());}

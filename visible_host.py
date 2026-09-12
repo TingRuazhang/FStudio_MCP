@@ -67,11 +67,20 @@ class VisibleHost:
         return result['data']
 
     def read(self, op, **args):
+        """只提交一次读取任务，以短间隔退避等待终态；超时保留原任务编号。
+
+        快速原生操作不再被固定 100 毫秒轮询间隔拖慢；较慢任务逐步退避，
+        最长间隔 50 毫秒，仍遵守原来的五秒返回任务语义。
+        """
         job = self.request(op,**args)
         deadline = time.monotonic()+5
+        delay = .005
         while time.monotonic()<deadline:
             result = self.request('job',job_id=job['job_id'])
             if result['status']=='completed': return result['result']
             if result['status']=='failed': raise RuntimeError(result['error'])
-            time.sleep(.1)
+            remaining = deadline-time.monotonic()
+            if remaining<=0:break
+            time.sleep(min(delay,remaining))
+            delay = min(delay*2,.05)
         return job

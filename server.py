@@ -36,6 +36,23 @@ def schema(props=None, required=()):
 STR = {'type': 'string', 'minLength': 1, 'maxLength': 512}
 NUM = {'type': 'number', 'minimum': 0, 'maximum': 16384}
 KEY = {'type': 'string', 'minLength': 1, 'maxLength': 80}
+MODEL_PATH = {'type': 'string', 'minLength': 1, 'maxLength': 512,
+              'pattern': r'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,15}$'}
+MODEL_PROPERTIES = {'type': 'array', 'maxItems': 60, 'items': schema(
+    {'member': MODEL_PATH, 'value': {}}, ['member', 'value'])}
+DRAW_CONFIG = {
+    'tool': STR, 'tool_properties': {'type': 'object', 'additionalProperties': {}},
+    'properties': MODEL_PROPERTIES, 'text': {'type': 'string', 'maxLength': 4096},
+    'text_style': schema({'font_name':STR, 'font_size':{'type':'number','minimum':8,'maximum':120},
+                          'color':{'type':'string','pattern':'^#[0-9A-Fa-f]{8}$'}, 'bold':{'type':'boolean'}}),
+    'local_addresses': {'type': 'array', 'maxItems': 8, 'items': schema({
+        'member': MODEL_PATH, 'address': {'type': 'integer', 'minimum': 0, 'maximum': 4294967295}},
+        ['member', 'address'])},
+}
+DRAW_WIDGET = schema(dict(DRAW_CONFIG, preset=KEY, name=KEY, x=NUM, y=NUM,
+                         width={'type': 'number', 'minimum': 1, 'maximum': 16384},
+                         height={'type': 'number', 'minimum': 1, 'maximum': 16384}),
+                     ['name', 'x', 'y', 'width', 'height'])
 BUILD_ID = {'type': 'string', 'pattern': '^[0-9a-fA-F]{32}$'}
 PAGE_UUID = {'type': 'string', 'pattern': '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'}
 PAGE_NAME = {'type': 'string', 'minLength': 1, 'maxLength': 512, 'pattern': r'^(?=.*\S)[^\x00-\x1f\x7f-\x9f]+$'}
@@ -106,13 +123,17 @@ TOOLS += [
     tool('fstudio_visible_output','Read native FStudio output categories including compiler messages.',schema()),
     tool('fstudio_visible_close_project','Close the active workspace project through background native services. While any open view is dirty the host refuses before calling native close, because the native save-changes dialog cannot be answered in background mode and the close job then never returns. Save first, or set discard_unsaved=true to skip the native window check and drop unsaved canvas changes.',schema({'discard_unsaved':{'type':'boolean'}}),False),
     tool('fstudio_model_inspect','Inspect native object properties and exact callable method signatures using a $ref from visible_state/model_get. Handles expire when the project is reopened.',schema({'ref':STR},['ref'])),
-    tool('fstudio_model_get','Read one public native object member, collection item, or 100-item collection page. Complex objects return $ref handles. Omit member to inspect the referenced collection.',schema({'ref':STR,'member':STR,'index':{'type':'integer','minimum':0},'offset':{'type':'integer','minimum':0}},['ref'])),
+    tool('fstudio_model_get','Read a public member or dotted property path (up to 16 segments), collection item, or 100-item collection page. Prefer model_get_many for several known fields. Complex objects return $ref handles; omit member for the referenced collection.',schema({'ref':STR,'member':MODEL_PATH,'index':{'type':'integer','minimum':0},'offset':{'type':'integer','minimum':0}},['ref'])),
+    tool('fstudio_model_get_many','Read 1..100 known property paths in one native UI job. Each read contains ref and member (up to 16 dot-separated segments). Returns ordered results with ref/member/value; complex values are scoped handles, collections are not expanded. Fails on an invalid path; does not recursively enumerate getters. Reuse canvas model handles instead of fetching every intermediate object.',schema({'reads':{'type':'array','minItems':1,'maxItems':100,'items':schema({'ref':STR,'member':MODEL_PATH},['ref','member'])}},['reads'])),
+    tool('fstudio_model_apply_many','Apply the same known property paths/values to several scoped model refs in one transaction. Compact alternative to repeating model_set_many changes. Maximum 100 expanded changes, same page/draft required. Duplicate refs or properties are rejected. Returns one host job; save to persist.',schema({'refs':{'type':'array','minItems':1,'maxItems':100,'items':STR},'properties':dict(MODEL_PROPERTIES,minItems=1)},['refs','properties']),False),
+    tool('fstudio_canvas_snapshot','Read a compact snapshot of the active page in one UI job: page identity/size, top-level control refs, UUIDs, exact Comment names, native types and actual bounds. Optional exact names filter (1..100); duplicate names return all matches and diagnostics, never silently choose one. Pagination uses offset/limit (<=100), next_offset and matched_count. page_uuid optionally guards against the wrong active page. Active-page own controls only: excludes inherited common-page composition and nested group children; not a rendered screenshot or runtime validation. Reacquire refs after reopen; use model_get_many only for additional known properties.',schema({'names':{'type':'array','minItems':1,'maxItems':100,'items':STR},'page_uuid':PAGE_UUID,'offset':{'type':'integer','minimum':0,'maximum':2147483647},'limit':{'type':'integer','minimum':1,'maximum':100}})),
     tool('fstudio_model_set','Set a permitted public native model property in the background. value is a scalar or a compatible {$ref:...}; the host rejects UI-object or interactive property paths. Prefer model_set_many for related position/size/property edits. Save the project to persist; inspect asynchronous job result.',schema({'ref':STR,'member':STR,'value':{}},['ref','member','value']),False),
     tool('fstudio_model_call','Call a permitted inspected public native model method in the background. Use exact signature for overloads, arguments as scalars or {$ref:...}. UI-object and interactive methods are blocked by the host. Returns asynchronous job ID; generic access does not make all native methods callable or verified.',schema({'ref':STR,'method':STR,'signature':{'type':'string'},'arguments':{'type':'array','items':{},'maxItems':50}},['ref','method']),False),
     tool('fstudio_model_create','Call a native model CreateAsChild/Create/CreateNew factory on a loaded Flexem.Studio type. Returns a handle via a job; add the model to the appropriate native collection/service afterward.',schema({'type':STR,'method':{'type':'string','enum':['CreateAsChild','Create','CreateNew']},'signature':{'type':'string'},'arguments':{'type':'array','items':{},'maxItems':50}},['type','method']),False),
-    tool('fstudio_model_set_many','Set 1 to 100 permitted native properties as one background batch. Obtain scoped handles from canvas_state or canvas_prepare; all targets must belong to the same page or draft, with no duplicate property. The host prevalidates properties and conversions. Attached pages use one native undo transaction; uncommitted drafts restore prior values on failure. Returns a host job with results (ref/member/value), native_undo_transaction and persistence; rollback failures are reported. Update position, size and related properties together without stepwise movement or property dialogs.',schema({'changes':{'type':'array','minItems':1,'maxItems':100,'items':schema({'ref':STR,'member':STR,'value':{}},['ref','member','value'])}},['changes']),False),
+    tool('fstudio_model_set_many','Set 1..100 properties in one background batch; member accepts a dotted path up to 16 segments from a scoped canvas/draft handle. Same page/draft required. Prevalidates paths, conversions, duplicate targets and parent/child replacement conflicts before writing. Attached pages use one undo transaction; drafts restore prior values on failure. Returns a job; poll visible_job. Save to persist.',schema({'changes':{'type':'array','minItems':1,'maxItems':100,'items':schema({'ref':STR,'member':MODEL_PATH,'value':{}},['ref','member','value'])}},['changes']),False),
 ]
 TOOLS += [
+    tool('fstudio_canvas_create_many','Create 1..30 native controls on the active Basic page in one host job: configure all drafts then insert in one native undo group. Up to 20 named presets share tool, tool_properties, properties, text_style and local_addresses; matching widget fields override. properties: <=60 per widget, <=1200 total. text and text_style are StaticTextTool-only; seed all initialized language labels using native Graphic fonts. Configure translations separately. Explicit bounds are applied last; returns requested/actual bounds. Unique names required; create-only, not upsert. Failure releases owned drafts and aborts insertion; cleanup errors reported. No save, compile, dialogs or runtime IO. Use prepare/configure/commit for unfamiliar controls.',schema({'widgets':{'type':'array','minItems':1,'maxItems':30,'items':DRAW_WIDGET},'presets':{'type':'object','additionalProperties':schema(DRAW_CONFIG)}},['widgets']),False),
     tool('fstudio_canvas_prepare','Prepare an initialized native drawing draft in the background without adding it to the canvas or opening the component property dialog. tool is the full native Flexem.Studio.GraphicsDesigner.Tools.*Tool type name; optional tool_properties sets public drawing-tool properties. Returns an asynchronous job whose result contains draft_id, model and view_model handles. Edit the initialized model with model_get/model_set, then canvas_commit or canvas_discard.',schema({'tool':STR,'tool_properties':{'type':'object','additionalProperties':{}}},['tool']),False),
     tool('fstudio_canvas_commit','Insert a prepared drawing draft at the specified canvas bounds through the native designer in the background. Only the resulting canvas update is visible; no mouse-drag animation or component-property dialog is part of this workflow. Returns an asynchronous job with the bound component and canvas state. Requires the original draft_id; this operation is not an upsert.',schema({'draft_id':STR,'name':KEY,'x':NUM,'y':NUM,'width':{'type':'number','minimum':1,'maximum':16384},'height':{'type':'number','minimum':1,'maximum':16384}},['draft_id','name','x','y','width','height']),False),
     tool('fstudio_canvas_discard','Discard an uncommitted native drawing draft in the background. Returns asynchronous job ID. Does not delete a component already committed to the canvas.',schema({'draft_id':STR},['draft_id']),False),
@@ -458,12 +479,27 @@ class FStudio:
         return self.visible.read('inspect_object', **args)
 
     def model_get(self, **args):
+        """读取已知原生属性路径或集合页，保持原有单项结果格式。"""
         return self.visible.read('read_member', **args)
+
+    def model_get_many(self, reads):
+        """在一个宿主任务中读取多个路径，不逐层产生客户端往返。"""
+        return self.visible.read('read_members', reads=reads)
+
+    def model_apply_many(self, refs, properties):
+        """将共用属性展开成一个受限批次；重复或超限时不触达原生宿主。"""
+        if len(refs)!=len(set(refs)):raise ValueError('Duplicate refs')
+        members=[p['member'] for p in properties]
+        if len(members)!=len(set(members)):raise ValueError('Duplicate properties')
+        if not refs or not properties or len(refs)*len(properties)>100:
+            raise ValueError('Expected 1..100 expanded property changes')
+        return self.model_set_many([dict(p,ref=ref) for ref in refs for p in properties])
 
     def model_set(self, **args):
         return self.visible.request('set_member', **args)
 
     def model_set_many(self, changes):
+        """提交深层属性批次，由宿主预校验并执行同一范围的撤销事务。"""
         return self.visible.request('set_members', changes=changes)
 
     def model_call(self, **args):
@@ -474,6 +510,52 @@ class FStudio:
 
     def canvas_prepare(self, **args):
         return self.visible.request('drawing_prepare', **args)
+
+    def canvas_snapshot(self, **args):
+        """一次读取当前页的稳定名称、身份和边界；按需分页，句柄仍仅属于当前会话。"""
+        names=args.get('names')
+        if names is not None and len(names)!=len(set(names)):
+            raise ValueError('Duplicate requested names')
+        return self.visible.read('drawing_snapshot',**args)
+
+    def canvas_create_many(self, widgets, presets=None):
+        """合并共用预设和控件覆盖值，一次提交声明；宿主负责回滚并报告清理失败。
+
+        同路径的控件专属配置覆盖预设；每层自身重复路径、未知预设和缺少工具均拒绝。
+        原生模型路径、类型、引用和插入是否成功仍由宿主验证。
+        """
+        presets=presets or {}
+        if len(presets)>20:raise ValueError('At most 20 presets are allowed')
+        resolved=[];names=set();property_count=0
+        for widget in widgets:
+            name=widget['name']
+            if name in names:raise ValueError('Duplicate widget name: '+name)
+            names.add(name)
+            preset=widget.get('preset')
+            if preset is not None and preset not in presets:raise ValueError('Unknown preset: '+preset)
+            base=presets.get(preset,{})
+            item=dict(base,**{k:v for k,v in widget.items() if k!='preset'})
+            if not item.get('tool'):raise ValueError('Widget requires tool or a preset with tool: '+name)
+            item['tool_properties']=dict(base.get('tool_properties',{}),**widget.get('tool_properties',{}))
+            if 'text_style' in base or 'text_style' in widget:
+                item['text_style']=dict(base.get('text_style',{}),**widget.get('text_style',{}))
+            for field in ('properties','local_addresses'):
+                merged={}
+                for layer in (base.get(field,[]),widget.get(field,[])):
+                    paths=[entry['member'] for entry in layer]
+                    if len(paths)!=len(set(paths)):raise ValueError('Duplicate '+field+' path in '+name)
+                    merged.update((entry['member'],dict(entry)) for entry in layer)
+                item[field]=list(merged.values())
+                if len(item[field])>(60 if field=='properties' else 8):raise ValueError('Too many '+field+' in '+name)
+            property_count+=len(item['properties'])
+            # 身份与布局由批量插入统一管理，不能被属性预设改成共享身份或旧位置。
+            reserved={'Comment','UniqueId','ComponentId','Position','IsReferenced'}
+            if any(p['member'].split('.')[0] in reserved for p in item['properties']):
+                raise ValueError('Use explicit name/bounds; identity and lifecycle properties are not preset fields')
+            resolved.append(item)
+        if not 1<=len(resolved)<=30 or property_count>1200:
+            raise ValueError('Expected 1..30 widgets and at most 1200 configured properties')
+        return self.visible.request('drawing_create_many',widgets=resolved)
 
     def canvas_commit(self, **args):
         return self.visible.request('drawing_commit', **args)
@@ -884,6 +966,7 @@ class FStudio:
 
 
 def serve(service):
+    """按顺序处理 MCP 请求并公布批量路径用法；仅分发通过 schema 校验的工具参数。"""
     initialized = False; ready = False
     def send(obj):
         sys.stdout.write(json.dumps(obj, ensure_ascii=False, allow_nan=False, separators=(',', ':'))+'\n'); sys.stdout.flush()
@@ -911,7 +994,7 @@ def serve(service):
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
                           'serverInfo': {'name':'fstudio-dll-mcp','version':'0.3.0'},
-                          'instructions':'FStudio background native-model operations with canvas result updates, no property dialogs or mouse dragging. Prefer canvas_prepare, model_get/model_set_many, then canvas_commit; discard unused drafts. Use pages_list and page_* for non-reserved Basic pages. Save before build_start; use its returned build_id, then build_status and compiler_success. visible_run_command is disabled with BACKGROUND_ONLY. Generic model methods are host-filtered. Native roundtrip checks do not mean compilation or hardware verification. Close the target project only before offline DTO/file edits; keep it open for native model/canvas/page/build operations.'}
+                          'instructions':'FStudio background native-model operations, no property dialogs or mouse dragging. Start existing-page edits with canvas_snapshot to resolve unique Comment names and actual bounds; it excludes inherited common-page composition and nested children. Fetch every next_offset for a full page audit. For known controls use canvas_create_many with reusable presets; inspect bounds_adjusted. For discovery use canvas_prepare, model_get_many for additional known dotted paths, model_set_many, then canvas_commit or canvas_discard. Apply identical properties to same-page refs with model_apply_many; use model_set_many for distinct values. Avoid one model_get per intermediate object. Await the original job_id; never resubmit timed-out writes. Use pages_list and page_* for non-reserved Basic pages. Save before build_start, then build_status and compiler_success. visible_run_command is disabled with BACKGROUND_ONLY. Generic model methods are host-filtered. Snapshot/roundtrip is not visual, compilation or hardware verification. Close the target project only before offline DTO/file edits; keep it open for native operations.'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')
             elif method == 'tools/list': result = {'tools': TOOLS}

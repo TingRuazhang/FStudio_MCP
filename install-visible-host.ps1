@@ -6,7 +6,7 @@ $taskFramework='C:\Windows\Microsoft.NET\Framework\v4.0.30319'
 New-Item -ItemType Directory -Force -Path $taskDestination | Out-Null
 Push-Location $PSScriptRoot
 try {
- & "$taskFramework\csc.exe" /nologo /target:library /platform:x86 /out:artifacts\FStudioMcp.Visible.dll "/r:$taskBin\ICSharpCode.Core.dll" /r:System.Core.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll "/r:$taskFramework\WPF\WindowsBase.dll" "/r:$taskFramework\WPF\PresentationCore.dll" "/r:$taskFramework\WPF\PresentationFramework.dll" src\VisibleHost.cs src\LiveModels.cs src\ProjectCreation.cs src\NativeDrawing.cs src\BatchDrawing.cs src\BackgroundBuild.cs src\BuildLogCapture.cs src\NativePages.cs
+ & "$taskFramework\csc.exe" /nologo /target:library /platform:x86 /out:artifacts\FStudioMcp.Visible.dll "/r:$taskBin\ICSharpCode.Core.dll" /r:System.Core.dll /r:System.Xaml.dll /r:System.Web.Extensions.dll "/r:$taskFramework\WPF\WindowsBase.dll" "/r:$taskFramework\WPF\PresentationCore.dll" "/r:$taskFramework\WPF\PresentationFramework.dll" src\VisibleHost.cs src\LiveModels.cs src\ProjectCreation.cs src\NativeDrawing.cs src\BatchDrawing.cs src\BackgroundBuild.cs src\BuildLogCapture.cs src\NativePages.cs src\TaskPreview.cs src\CompiledPreview.cs
  if($LASTEXITCODE -ne 0){throw 'Visible host build failed'}
  $taskLoadedDestination=Join-Path $taskDestination 'FStudioMcp.Visible.dll'
  try {

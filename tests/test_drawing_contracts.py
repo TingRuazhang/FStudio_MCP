@@ -23,6 +23,7 @@ class DrawingContractsTests(unittest.TestCase):
         output = (result.stdout+result.stderr).decode('utf8', errors='replace')
         self.assertEqual(result.returncode, 0, output)
         self.assertIn('Drawing contract checks passed: 55', output)
+        self.assertIn('Preview build ownership checks passed: 15', output)
 
 
 if __name__ == '__main__':

@@ -23,8 +23,11 @@ import zipfile
 from visible_host import VisibleHost
 from isolated_build_manager import IsolatedBuildManager
 from canvas_spec import expand_widgets
+from build_snapshot import input_manifest
 
 HERE = Path(__file__).resolve().parent
+# MCP 初始化返回的 API 版本与本轮原生宿主保持一致；不据此假定当前进程已经加载匹配 DLL。
+API_VERSION = '0.5.0'
 NAMESPACE = '{http://schemas.flexem.com/fs/model/1}'
 SUPPORTED_PROTOCOLS = ('2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05')
 DEFAULT_BIN = Path(r'C:\Program Files (x86)\Flexem\FStudio 3.x\Bin')
@@ -121,6 +124,11 @@ TOOLS += [
     tool('fstudio_canvas_state','Read the current native drawing canvas and prepared-draft state through the background host.',schema()),
     tool('fstudio_canvas_show','Show the existing workspace canvas window without activating it, opening settings, or generating mouse input. Restores a minimized canvas so native drawing updates can be observed. Does not bring an already visible window above other applications. Returns a host job and observed visibility/focus state.',schema(),False),
     tool('fstudio_address_configure_local','Configure a direct AddressInfo or AddressData from the active canvas or its draft using the current project native local-device bit/word register factory. Preserves the address data type; changes device, register and main index in one native undo transaction on an attached page. Rejects label/index/station-reference/offset/tag-reference addresses. Returns the actual device/register/index; does not read or write hardware.',schema({'ref':STR,'address':{'type':'integer','minimum':0,'maximum':4294967295}},['ref','address']),False),
+    # Modbus RTU 地址绑定：设备与寄存器由原生宿主核实，只改模型，不发起现场通信。
+    tool('fstudio_address_configure_modbus_rtu','将当前页或其草稿中的直接 AddressInfo/AddressData 绑定到本工程已启用的 Modbus RTU 主站端口（PLCID4）。station为固定从站1..247，address为4X一基字地址1..65536；Bit地址必须提供bit0..15，Word地址不提供bit。保留现有数据类型，拒绝标签、变量站号、索引与偏移等高级地址。在一个原生撤销事务内设置设备、站号与4X身份；不保存工程、不读写硬件。',schema({'ref':STR,'device_id':PAGE_UUID,'station':{'type':'integer','minimum':1,'maximum':247},'address':{'type':'integer','minimum':1,'maximum':65536},'bit':{'type':'integer','minimum':0,'maximum':15}},['ref','device_id','station','address']),False),
+    # 倍率和偏移是业务数值，必须允许负数，不复用仅适用于画布坐标的 NUM 范围。
+    tool('fstudio_numeric_configure_zoom','以原生完整DTO设置当前页或草稿NumericCharInfo的Zoom倍率及偏移，明确decimal_scaling布尔值，并开启两个独立数值运算开关。gain和offset可正可负，宿主拒绝非有限数。推荐倍率参数gain=0.1、offset=0按需求验证；保留DecimalValue及读地址数据类型。接口不推断显示小数位是否自行缩放，组合效果必须离线验证。只改模型，不保存、不读写硬件。',schema({'ref':STR,'gain':{'type':'number'},'offset':{'type':'number'},'decimal_scaling':{'type':'boolean'}},['ref','gain','offset','decimal_scaling']),False),
+    tool('fstudio_numeric_configure_limits','在选择DataType之后，以完整原生DTO初始化NumericCharInfo的MinLimit/MaxLimit常量，并关闭四个OverflowValue/Blink标志。参数use_limit必须true；原生false会在构造和保存时丢弃两个子对象。支持NormalData及旧NumericSetingData路径并去重别名。只改当前页或草稿模型，不改地址/倍率、不保存、不读写硬件。',schema({'ref':STR,'min':{'type':'number','minimum':-32768,'maximum':65535},'max':{'type':'number','minimum':-32768,'maximum':65535},'use_limit':{'type':'boolean','enum':[True]}},['ref','min','max','use_limit']),False),
     tool('fstudio_import_image','Import a local PNG/JPG/GIF/BMP file into a StaticPictureInfo on the active canvas or its draft by setting its NormalInfo.ImageData bytes (base64 over the local pipe) and ImageImportPath. The file is validated (existence, size limit 8 MiB, image magic), copied into the project HMI/Lib/ImportImage directory and rejected when the control already imports a file; the write uses the same native undo transaction path as model_set. The native serializer drops PictureOrigin for fresh imports, so compilation keeps reporting "请从文件或者图库导入图片。"; set repair_origin=true to also save, close the project, insert <PictureOrigin>File</PictureOrigin> after the ImageImportPath element in the affected page XML, and reopen the project in one call. Save afterwards to persist. No file dialog is opened; runtime rendering is not verified.',schema({'ref':STR,'file':STR,'repair_origin':{'type':'boolean','default':False}},['ref','file']),False),
     tool('fstudio_add_language','Add a project UI language through the native LanguageConfigurationService.AddItem with a standard .NET culture name (e.g. ja-JP), reusing the font of the first existing language configuration. Rejects duplicate cultures. Save the project to persist; the language appears in LanguageConfigInfo.cfg with its LCID and survives close/reopen. No settings dialog is opened; translation workflows are not part of this call.',schema({'culture':STR},['culture']),False),
     tool('fstudio_add_user_level','Add a project user level through the native UserLevelInfos.AddUserLevelInfo factory (level 1..255) with optional password and description; duplicate levels are rejected. The native configuration is saved to HMI/System/UserLevelConfigInfo.cfg immediately and verified by count; survives close/reopen. No settings dialog is opened; control authorization and runtime login behavior are not part of this call.',schema({'level':{'type':'integer','minimum':1,'maximum':255},'password':{'type':'string','maxLength':64},'description':{'type':'string','maxLength':128}},['level']),False),
@@ -187,6 +195,28 @@ TOOLS += [
 ]
 BY_NAME = {t['name']: t for t in TOOLS}
 
+# 将宿主已有的原生开关动作初始化器暴露为标准 MCP 工具，不依赖具体工程的页面结构。
+# 仅配置草稿/画布中的原生开关，不执行动作，不读写硬件；宿主仍拒绝非空动作列表。
+_switch_action_tool = tool('fstudio_canvas_configure_switch_action',
+    'Initialize one supported native action on a SwitchInfo with an empty action list. The host does not execute the action. Save the project separately.',
+    schema({'ref': STR, 'action_type': {'type':'string','enum':['WindowOper','Word','DataTransfer','RecipeTransfer','Print']}}, ['ref','action_type']), False)
+TOOLS.append(_switch_action_tool)
+BY_NAME[_switch_action_tool['name']] = _switch_action_tool
+_public_open_tool=tool('fstudio_public_page_open','Open only the current project native PublicWindow using its fixed manager identity, without changing page ID/type or opening settings. Ordinary Basic-page protections remain unchanged.',schema(),False)
+TOOLS.append(_public_open_tool)
+BY_NAME[_public_open_tool['name']]=_public_open_tool
+for _preview_tool in [
+    tool('fstudio_canvas_render','Render the active native editor canvas to a workspace PNG. This is editor rendering, not simulator verification.',schema({'file':STR},['file'])),
+    tool('fstudio_simulate_offline','Save the active project and request the native simulator with IsOnLine=false. This starts an offline simulator window and never selects online mode.',schema(),False),
+    tool('fstudio_simulate_compiled','验证成功隔离编译的完整源码清单和输出哈希与当前已保存工程相符后，将生成输出复制到本工程Bin，并通过官方完整参数启动离线FCS/FSGUI（SimPlc）。不重复编译、不清除记录，不允许传入程序或命令行；拒绝已有模拟器或未保存页面。build_id必须属于当前同一工程且已compiler_success=true。',schema({'build_id':BUILD_ID},['build_id']),False),
+    tool('fstudio_simulator_helper_close','GUI已正常退出后，仅向本宿主实际创建并持有的FCS隐藏窗口请求正常关闭；不接受PID，不强制终止、不按名字批量关闭。',schema(),False),
+    tool('fstudio_simulator_capture','Capture the client area of the FSGUI process newly started by this host offline request. Does not accept arbitrary process or window IDs.',schema({'file':STR},['file'])),
+    tool('fstudio_simulator_close','向当前宿主本次离线启动的模拟器窗口请求正常关闭。只接受已验证的进程归属，不接受进程ID，不强制终止进程。',schema(),False),
+    tool('fstudio_simulator_close_project_preview','正常关闭当前原生宿主启动的本工程离线预览。只匹配官方FSGUI路径、当前宿主父PID、当前工程Bin/fshmi.bin和RunMode=SimPlc，不接受PID参数或强制终止。',schema(),False)
+]:
+    TOOLS.append(_preview_tool)
+    BY_NAME[_preview_tool['name']]=_preview_tool
+
 
 def validate(value, spec, at='arguments'):
     """按工具 schema 校验参数；不匹配时抛出带字段路径的 ValueError。
@@ -250,7 +280,8 @@ class NativeBridge:
         self.proc.stdin.flush()
         try: line = self.responses.get(timeout=30)
         except queue.Empty:
-            self.proc.kill(); raise RuntimeError('Native bridge timed out; destination was not committed')
+            # 传输期限无法证明提交是否发生，调用者必须先核对目标文件，不能自动重发修改。
+            self.proc.kill(); raise RuntimeError('Native bridge timed out; outcome is unknown. Inspect destination files before retrying')
         if line is None: raise RuntimeError('Native bridge closed: ' + ''.join(self.stderr)[-2000:])
         result = json.loads(line)
         if not result.get('ok'): raise RuntimeError(result.get('error', 'Native bridge failed'))
@@ -265,6 +296,152 @@ class NativeBridge:
 
 
 class FStudio:
+    def canvas_render(self,file):
+        return self.visible.request('task_render_canvas',file=str(self.inside(file)))
+
+    def simulate_offline(self):
+        return self.visible.request('task_simulate_offline')
+
+    def simulate_compiled(self, build_id):
+        """仅复用当前保存工程的成功编译结果；源码、输出和目标路径均在启动前重新核对。
+
+        source_unchanged是完成编译时的记录，不能用它替代当前清单比较。生成的Bin
+        可覆盖，用户temp记录保留；已有模拟器时在复制前拒绝，避免影响正在使用的输出。
+        """
+        state = self.builds.status(build_id)
+        if state.get('status') != 'completed' or state.get('compiler_success') is not True:
+            raise ValueError('Expected a completed successful native build')
+        preflight = self._wait_job(self.visible.request('task_compiled_preview_preflight'))
+        project = self.inside(preflight['project'])
+        if project != Path(state['project']).resolve():
+            raise ValueError('The successful build belongs to another active project')
+        job_dir = self.builds.directory(build_id)
+        snapshot = json.loads((job_dir/'snapshot.json').read_text(encoding='utf-8'))
+        if Path(snapshot['source']).resolve() != project or input_manifest(project.parent) != snapshot['inputs']:
+            raise ValueError('Saved project inputs differ from the successful build; rebuild first')
+        outputs = job_dir/'outputs'
+        manifest = json.loads((job_dir/'outputs.json').read_text(encoding='utf-8'))['files']
+        if 'fshmi.bin' not in manifest or input_manifest(outputs) != manifest:
+            raise ValueError('Native compiled output hashes do not match the archived manifest')
+        # 在解析路径前拒绝 Bin 根的链接/联接点。仅判断解析后的路径仍在工程内不足以
+        # 防止 Bin 被联接到 HMI 等源码目录；不得把生成文件写入另一个合法工程子目录。
+        candidate = project.parent/'Bin'
+        if candidate.exists() or candidate.is_symlink():
+            info = candidate.lstat()
+            if candidate.is_symlink() or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise ValueError('Compiled output Bin refuses reparse points')
+            if not candidate.is_dir():
+                raise ValueError('Compiled output Bin must be a directory')
+            # 先扫描已有文件，再开始复制；内部链接也必须在任何旧输出被覆盖前拒绝。
+            input_manifest(candidate)
+        destination = self.inside(str(candidate))
+        if not destination.is_relative_to(project.parent):
+            raise ValueError('Compiled output destination escaped the current project')
+        targets = []
+        for relative in manifest:
+            target = self.inside(str(destination/relative))
+            if not target.is_relative_to(destination):
+                raise ValueError('Compiled output file escaped the project Bin directory')
+            targets.append((relative, target))
+        # 全部目标先校验后写入。复制或校验失败不会启动模拟器；生成输出可由同一归档重试。
+        for relative, target in targets:
+            target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(outputs/relative,target)
+        # 当前目录可能保留其他历史生成文件，逐一比对本次清单，不误删非本次文件。
+        actual = input_manifest(destination)
+        if any(actual.get(relative) != evidence for relative,evidence in manifest.items()):
+            raise RuntimeError('Staged native output verification failed; simulator was not started')
+        # 复制期间若另一客户端修改并保存工程，停止启动，保留生成输出供重新构建。
+        if input_manifest(project.parent) != snapshot['inputs']:
+            raise RuntimeError('Saved project changed while staging the verified outputs')
+        return self.visible.request('task_simulate_compiled_offline')
+
+    def simulator_helper_close(self):
+        """关闭本宿主拥有的离线后台辅助进程，不接管外部进程。"""
+        return self.visible.request('task_compiled_helper_close')
+
+    def simulator_capture(self,file):
+        return self.visible.request('task_simulator_capture',file=str(self.inside(file)))
+
+    def simulator_close(self):
+        """由已加载的新宿主核验本次离线启动归属并请求正常关闭，不提供兼容绕行。"""
+        return self.visible.read('task_simulator_close')
+
+    def simulator_close_project_preview(self):
+        """仅关闭本工程的明确离线预览，支持用户在当前原生宿主中手动开启的同一工程预览。"""
+        if os.name != 'nt':
+            raise RuntimeError('Project preview close requires Windows')
+        endpoint = json.loads(self.visible.endpoint.read_text(encoding='utf-8-sig'))
+        health = self.visible.request('health')
+        host_pid = endpoint.get('pid')
+        if (not isinstance(host_pid, int) or isinstance(host_pid, bool) or host_pid <= 0
+                or health.get('pid') != host_pid
+                or endpoint.get('pipe') != 'fstudio-mcp-' + str(host_pid)):
+            raise RuntimeError('Current native host identity could not be verified')
+        state = self.visible.read('state')
+        if state.get('status') in ('queued', 'running'):
+            raise RuntimeError('Current project state is pending; no preview close was requested')
+        project = self.inside(state.get('project', ''))
+        if project.suffix.lower() != '.fsprj' or not project.is_file():
+            raise RuntimeError('A current native workspace project is required')
+        data_file = self.inside(project.parent / 'Bin' / 'fshmi.bin')
+        if not data_file.is_file():
+            raise RuntimeError('Current project compiled preview data is missing')
+        official_executable = (self.bin / 'FSGUI.exe').resolve()
+        if not official_executable.is_file():
+            raise RuntimeError('Installed official preview executable is missing')
+        # 参数只经当前宿主和工作区路径产生，传给子进程私有环境变量；不拼接用户文本到代码。
+        environment = os.environ.copy()
+        environment.update(FSTUDIO_PROJECT_CLOSE_HOST_PID=str(host_pid),
+                           FSTUDIO_PROJECT_CLOSE_OFFICIAL_EXE=str(official_executable),
+                           FSTUDIO_PROJECT_CLOSE_DATA_FILE=str(data_file))
+        script = r'''
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$taskHostId = [int]$env:FSTUDIO_PROJECT_CLOSE_HOST_PID
+$taskOfficial = [IO.Path]::GetFullPath($env:FSTUDIO_PROJECT_CLOSE_OFFICIAL_EXE)
+$taskDataFile = [IO.Path]::GetFullPath($env:FSTUDIO_PROJECT_CLOSE_DATA_FILE)
+$taskMatches = @(Get-CimInstance Win32_Process -Filter "Name='FSGUI.exe'" | Where-Object {
+    $taskInfo = $_
+    if ($taskInfo.ParentProcessId -ne $taskHostId -or [string]::IsNullOrWhiteSpace($taskInfo.ExecutablePath)) { return $false }
+    if ([IO.Path]::GetFullPath($taskInfo.ExecutablePath) -ine $taskOfficial) { return $false }
+    $taskDataMatches = [regex]::Matches([string]$taskInfo.CommandLine, '<UserPrjDat>([^<>]+)</UserPrjDat>')
+    $taskModeMatches = [regex]::Matches([string]$taskInfo.CommandLine, '<RunMode>([^<>]+)</RunMode>')
+    if ($taskDataMatches.Count -ne 1 -or $taskModeMatches.Count -ne 1) { return $false }
+    if ($taskModeMatches[0].Groups[1].Value -cne 'SimPlc') { return $false }
+    return [IO.Path]::GetFullPath($taskDataMatches[0].Groups[1].Value) -ieq $taskDataFile
+})
+if ($taskMatches.Count -eq 0) {
+    @{status='no_matching_project_preview';close_requested=$false;host_pid=$taskHostId} | ConvertTo-Json -Compress
+    exit 0
+}
+if ($taskMatches.Count -ne 1) { throw 'Multiple matching project previews; no window was closed' }
+$taskInfo = $taskMatches[0]
+$taskRuntime = Get-Process -Id $taskInfo.ProcessId -ErrorAction Stop
+# 再次核验创建时间，避免元数据读取与关闭之间 PID 被其他新进程复用。
+if ([Math]::Abs(($taskInfo.CreationDate.ToUniversalTime() - $taskRuntime.StartTime.ToUniversalTime()).TotalSeconds) -gt 0.05) { throw 'Preview process identity changed' }
+if (-not $taskRuntime.CloseMainWindow()) { throw 'The verified preview has no normal main-window close route' }
+@{status='close_requested';close_requested=$true;process_id=$taskInfo.ProcessId;host_pid=$taskHostId;executable=$taskOfficial;project_data=$taskDataFile;run_mode='SimPlc';forced_termination=$false;process_exit_verified=$false} | ConvertTo-Json -Compress
+'''
+        encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+        result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                                 '-EncodedCommand', encoded], env=environment,
+                                capture_output=True, text=True, encoding='utf-8', timeout=15,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode:
+            raise RuntimeError('Project preview close was refused: ' + result.stderr.strip())
+        response = json.loads(result.stdout.strip())
+        response['project'] = str(project)
+        return response
+
+    def public_page_open(self):
+        """打开原生管理器指定的唯一公共页，不接收任意页面身份。"""
+        return self.visible.request('page_open_public')
+
+    def canvas_configure_switch_action(self, ref, action_type):
+        """透传宿主既有初始化器；不增加保留页修改或交互命令权限。"""
+        return self.visible.request('page_configure_switch_action', ref=ref, action_type=action_type)
+
     def __init__(self, workspace, bin_dir):
         self.workspace = workspace.resolve()
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -560,6 +737,21 @@ class FStudio:
 
     def address_configure_local(self, **args):
         return self.visible.request('drawing_configure_local_address', **args)
+
+    def address_configure_modbus_rtu(self, ref, device_id, station, address, bit=None):
+        """交给原生宿主验证设备、地址归属和完整4X身份；不保存、不接触串口。"""
+        arguments = {'ref': ref, 'device_id': device_id, 'station': station, 'address': address}
+        if bit is not None:
+            arguments['bit'] = bit
+        return self.visible.request('drawing_configure_modbus_rtu_address', **arguments)
+
+    def numeric_configure_zoom(self, ref, gain, offset, decimal_scaling):
+        """完整构造原生Zoom及两个常量子模型，实际缩放组合须由离线验证确定。"""
+        return self.visible.request('drawing_configure_numeric_zoom', ref=ref, gain=gain, offset=offset, is_decimal_scaling=decimal_scaling)
+
+    def numeric_configure_limits(self, ref, min, max, use_limit):
+        """先选择DataType再初始化完整常量上下限；原生持久化要求use_limit为true。"""
+        return self.visible.request('drawing_configure_numeric_limits', ref=ref, min=min, max=max, use_limit=use_limit)
 
     def add_language(self, culture):
         culture = (culture or '').strip()
@@ -983,7 +1175,7 @@ def serve(service):
                 initialized = True
                 result = {'protocolVersion': version if version in SUPPORTED_PROTOCOLS else SUPPORTED_PROTOCOLS[0],
                           'capabilities': {'tools': {'listChanged':False}},
-                          'serverInfo': {'name':'fstudio-dll-mcp','version':'0.4.0'},
+                          'serverInfo': {'name':'fstudio-dll-mcp','version':API_VERSION},
                           'instructions':'优先 canvas_snapshot 定位控件、model_get_many 批量回读、model_apply_many/model_set_many 批量修改。创建已验证的控件用 canvas_create_many 和 presets；特殊控件用 canvas_prepare 后配置并 canvas_commit。批量创建不是 upsert，续做先按唯一名称查询。快速任务可直接返回 completed/result；仍排队时仅查询同一 job_id，勿重复提交写操作。检查 bounds_adjusted 与实际边界，保存后核验重开和编译。宿主 DLL 与 Python 服务都需升级。公共页和组内内容不包含在快照中，结构检查不代表截图、模拟或硬件验证。visible_run_command 禁用；不调出属性窗口，不执行鼠标拖动。'}
             elif method == 'ping': result = {}
             elif not ready: raise ValueError('Initialize and send notifications/initialized first')

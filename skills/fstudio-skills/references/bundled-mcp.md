@@ -1,43 +1,37 @@
-# 使用内置 MCP 的完整技能包
+# 核实MCP包并接入
 
-Release 的 `Fstudio_skills.zip` 以技能为入口，同时包含对应版本的 MCP 源码：
+技能指导文件和MCP执行包可以分别安装。当前目录是否自带MCP，必须检查实际文件；不能把Release说明、技能已加载或 `setup_mcp.ps1` 的存在当成完整源码已安装。
 
-```text
-fstudio-skills/
-  SKILL.md
-  LICENSE
-  agents/
-  references/
-  scripts/
-    check_layout.py
-    setup_mcp.ps1
-  mcp/
-    server.py
-    build.ps1
-    install-visible-host.ps1
-    src/
-    ...其余运行依赖源码
-```
+## 先定位实际安装
 
-技能提供制作方法，MCP 提供执行工具。包内附完整源码，但复制技能目录不会自动向 AI 客户端注册 MCP，也不会自动安装 FStudio。仓库的 `skills/fstudio-skills` 是技能维护源；完整下载包由仓库根目录的 `python package-skill.py` 组装，避免在 Git 仓库中复制两份 MCP 源码。
+- 已有可用连接：读取客户端当前连接的启动命令、参数和工作区。其 `server.py` 所在目录才是当前执行包；独立MCP包不一定在技能目录下。优先复用该连接，避免为加载技能新增重复服务。
+- 预期是一体包：检查 `<技能目录>/mcp/server.py`、构建脚本和宿主源码是否存在。当前 `scripts/setup_mcp.ps1` 固定寻找这个 `mcp/` 目录；缺少时该脚本不能完成构建，应明确说明安装只有指导文件或包不完整。
+- 只有指导文件且没有连接：取得用户指定或可信上游的实际MCP包，核对其版本、入口和许可证，再按包内文档接入。不要自行声称已安装，也不要把另一个任务的临时恢复目录当成通用默认包。
 
-## 接入步骤
+上游仓库中的 `skills/fstudio-skills` 可以仅作为指导文件维护源；某些Release一体包由打包脚本把MCP源码放入技能的 `mcp/`。这是可能的布局，不是每个安装的保证。独立包可位于其他目录，应从实际客户端配置定位，不能硬编码个人路径。
 
-1. 将整个 `fstudio-skills` 文件夹放到最终使用位置。若客户端支持 Codex 技能目录，可放在 `~/.codex/skills/fstudio-skills`；其他客户端按其技能机制接入。已连接独立 MCP 的环境可继续复用原连接，无需再建一套。
-2. 确认本机已有 Windows、64 位 PowerShell 7、Python 3.11+、.NET Framework 4.x 编译器和合法安装的 FStudio 3。
-3. 在 PowerShell 中按实际解释器、工作区和技能目录运行：
+## 按实际包配置
+
+1. 保留现有工程、工作区和客户端配置。核对该版本所需的Windows、PowerShell架构、Python版本、.NET编译器及合法安装的FStudio；以实际包的依赖说明为准。
+2. 源码与运行宿主需匹配。若包提供构建和宿主安装脚本，先读取其真实参数；不得为旧脚本编造新的包路径参数。只含Python服务也不代表宿主插件已加载。
+3. 一体包具备上述文件时，按实际解释器和目录使用现有脚本：
 
    ```powershell
-   & 'C:\Program Files\PowerShell\7\pwsh.exe' -NoLogo -NoProfile -File '<技能目录>\scripts\setup_mcp.ps1' -PythonExecutable '<Python解释器完整路径>' -Workspace 'C:\FStudioWork'
+   & '<PowerShell7解释器>' -NoLogo -NoProfile -File '<技能目录>\scripts\setup_mcp.ps1' -PythonExecutable '<Python解释器>' -Workspace '<工程工作区>' -FStudioRoot '<FStudio安装目录>'
    ```
 
-   自定义 FStudio 安装路径时加 `-FStudioRoot 'D:\FStudio'`。工作区尽量使用较短路径，具体工程仍受原生目录长度限制。
+   独立包则遵循其自身配置方式。若其schema确认使用stdio与相应参数，配置应指向实际包入口，例如：
 
-4. 脚本在 `mcp/mcp.local.json` 生成 stdio 配置片段，并使原生宿主工作区保持一致。将其中的命令和参数接入 AI 客户端；客户端采用其他配置格式时按字段映射，不覆盖整份现有配置。脚本不会修改全局配置或启动 FStudio。
-5. 重新连接该 MCP，在已加载插件的宿主中确认工程和 `fstudio_canvas_snapshot` 等工具可用，再按技能流程制作。技能目录移动后需要重新运行配置脚本以更新绝对路径。
+   ```text
+   command: <Python解释器>
+   args: <MCP包目录>/server.py --workspace <工程工作区> --fstudio-bin <FStudio安装目录>/Bin
+   ```
+
+4. 将生成的配置片段映射到客户端支持的格式，不覆盖整份全局配置。当前一体包脚本会在包内生成 `mcp.local.json`，但不自动注册客户端，也不自动启动FStudio。
+5. 重新连接后分别确认服务工具列表、宿主响应、活动工程和画布。服务器列出某工具而宿主拒绝操作，通常仍需核对正在运行的DLL与接口版本；排障见 [call-troubleshooting.md](call-troubleshooting.md)。
 
 ## 更新已有安装
 
-先保存工程并停止相关 MCP/宿主。更新包内源码和技能资源，保留原有 `mcp/projects`、工作区工程及必要配置；不要删除整个已使用的技能文件夹后重新解压。重新运行构建配置脚本时传入原工作区，更新客户端同一个连接，再正常启动。若已有工程位于独立工作区，继续沿用该目录。
+按当前授权保存工程，先确认没有其他客户端正在操作活动画布。保留工作区、工程、配置及必要资源；更新原连接对应的实际MCP包，不删除整个已使用技能目录再解压。宿主DLL被已运行进程锁定时，构建成功不等于加载成功；应正常保存并重启到匹配宿主，再刷新工具能力与模型引用。未保存工程不能为更新而强行丢弃。
 
-技能与 MCP 源码采用仓库标准 MIT 许可证。FStudio 软件及相关厂商资源版权归繁易公司及相应权利人所有；完整技能包不包含厂商 DLL、字体、模板、许可证或用户工程。
+仅更新指导文档不会修复运行中的MCP代码。是否需要构建、注册或加载新宿主，由具体调用故障和实际包决定。技能与MCP源码的许可证以取得的包和上游声明为准；FStudio软件及厂商资源仍归相应权利人，不随技能分发厂商DLL、字体、模板、许可证或用户工程。

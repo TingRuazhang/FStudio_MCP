@@ -7,7 +7,7 @@ description: 使用 FStudio MCP 高效制作、还原和修复 HMI：批量控�
 
 把工艺语义、设计意图和原生运行行为一起交付。适用于不同设备、分辨率、行业与页面结构；不内置具体项目的罐体、菜单、颜色、寄存器或工程路径。
 
-Release 完整包在技能根目录下附带 `mcp/` 源码。已有可用 MCP 连接时直接复用；尚未连接且需要使用内置版本时，读取 [references/bundled-mcp.md](references/bundled-mcp.md) 完成构建和客户端接入。不要因为技能被加载就认为 MCP 已安装或连通。
+技能安装可能只包含指导文档，并不一定带有 `mcp/` 源码。已有可用 MCP 连接时直接复用；缺少连接或需要更新时，先读取 [references/bundled-mcp.md](references/bundled-mcp.md)，核实实际包目录、构建产物和客户端接入方式。不要因为技能被加载就认为 MCP 已安装或连通。
 
 ## 先选工作范围
 
@@ -41,6 +41,8 @@ Release 完整包在技能根目录下附带 `mcp/` 源码。已有可用 MCP �
 6. 在目标运行环境检查实际画面和交互。未达到要求时按可见差异修复，不以连续生成更多版本代替定位。
 
 原生接口、序列化、异步与已知陷阱见 [references/fstudio-native.md](references/fstudio-native.md)。只读取当前问题相关章节。
+
+调用超时、宿主未加载新接口、草稿跨页或模型字段不匹配时，读取 [references/call-troubleshooting.md](references/call-troubleshooting.md)，先定位失败层再恢复同一任务。
 
 ## MCP 执行入口
 

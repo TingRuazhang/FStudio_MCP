@@ -22,6 +22,13 @@ namespace FStudioMcp {
  internal static partial class VisibleHost {
   static Dispatcher dispatcher;
   const string ExecutionMode="background_with_live_canvas";
+  // 端点与健康检查共用 API 版本，便于客户端分辨磁盘已更新但宿主仍加载旧 DLL 的情况。
+  const string ApiVersion="0.5.0";
+  // 仅公布实际已实现的通用宿主操作，不把缺失能力或私有扩展声明为可调用接口。
+  static readonly string[] HostFeatures={"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result",
+   "page_open_public","drawing_configure_modbus_rtu_address","drawing_configure_numeric_zoom","drawing_configure_numeric_limits",
+   "build_start","build_status","build_cancel","build_diagnostics","task_render_canvas","task_simulate_offline",
+   "task_simulate_compiled_offline","task_simulator_capture","task_simulator_close","task_compiled_helper_close"};
   static readonly object gate=new object();
   static readonly Dictionary<string,Dictionary<string,object>> jobs=new Dictionary<string,Dictionary<string,object>>();
   static Dictionary<string,Type> commands;
@@ -39,11 +46,13 @@ namespace FStudioMcp {
    stateDir=Path.GetFullPath(S(config,"state_directory"));Directory.CreateDirectory(stateDir);
    pipeName="fstudio-mcp-"+Process.GetCurrentProcess().Id;
    Log("宿主接口已启动。后台执行，仅原生画布显示绘图变化。");
-   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version","0.4.0","execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
+   File.WriteAllText(Path.Combine(stateDir,"endpoint.json"),Json().Serialize(Obj("pipe",pipeName,"pid",Process.GetCurrentProcess().Id,"workspace",workspace,"version",ApiVersion,"execution_mode",ExecutionMode,"visible_log",false)),new UTF8Encoding(false));
    new Thread(Listen){IsBackground=true,Name="FStudio MCP pipe"}.Start();
   }
   static void Log(string text) {File.AppendAllText(Path.Combine(stateDir,"visible-host.log"),DateTime.Now.ToString("o")+" "+text+Environment.NewLine,Encoding.UTF8);}
-  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list";}
+  // PNG 导出只观察既有画布或已拥有的模拟器，不保存/切换工程；这两项沿用只读观察权限。
+  // compiled preflight 会授权服务端安装 Bin，不能因为该阶段自身只读就绕过编译所有权。
+  static bool IsReadOnly(string op) {return op=="state"||op=="commands"||op=="output"||op=="inspect_object"||op=="read_member"||op=="read_members"||op=="drawing_snapshot"||op=="drawing_state"||op=="drawing_catalog"||op=="build_status"||op=="build_diagnostics"||op=="pages_list"||op=="task_render_canvas"||op=="task_simulator_capture";}
   /// <summary>复用运行中程序集的类型元数据，减少每个控件重复扫描所有程序集的开销。</summary>
   static Type Native(string name) {
    Type cached;if(nativeTypes.TryGetValue(name,out cached))return cached;
@@ -76,7 +85,13 @@ namespace FStudioMcp {
   }
   static object OnUi(Dictionary<string,object> a) {
    string op=S(a,"op");
+   // 所有入口先遵守原有编译所有权；预览启动会保存工程或使用 Bin，关闭也会改变运行环境。
+   // build_cancel 的原有特例和 build_status/diagnostics 的只读权限保持不变。
    lock(buildGate)if(activeBuild!=null&&!activeBuild.Finalized&&!IsReadOnly(op)&&op!="build_cancel")throw new InvalidOperationException("A background build owns the project; wait for its build_id before changing or switching the project");
+   if(op=="task_compiled_preview_preflight")return TaskCompiledPreviewPreflight();
+   if(op=="task_simulate_compiled_offline")return TaskPreviewLaunchCompiledOffline();
+   if(op=="task_compiled_helper_close")return TaskPreviewCloseCompiledHelper();
+   if(op=="task_render_canvas"||op=="task_simulate_offline"||op=="task_simulator_capture"||op=="task_simulator_close")return NativeTaskPreview(a);
    if(op.StartsWith("build_"))return BackgroundBuildOperation(a);
    if(op=="sampling_add")return AddLocalSampling(a);
    if(op=="pages_list"||op.StartsWith("page_"))return NativePageOperation(a);
@@ -115,7 +130,7 @@ namespace FStudioMcp {
   }
   static object Handle(Dictionary<string,object> a) {
    var op=S(a,"op");
-   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version","0.4.0","features",new[]{"drawing_snapshot","drawing_create_many","read_members","apply_members","member_paths","inline_job_result"},"execution_mode",ExecutionMode,"visible_log",false);
+   if(op=="health")return Obj("pid",Process.GetCurrentProcess().Id,"pipe",pipeName,"host_initialized",true,"workspace",workspace,"version",ApiVersion,"features",HostFeatures,"execution_mode",ExecutionMode,"visible_log",false);
    if(op=="job") {lock(gate){Dictionary<string,object> j;if(!jobs.TryGetValue(S(a,"job_id"),out j))throw new ArgumentException("Unknown job");return new Dictionary<string,object>(j);}}
    var timer=Stopwatch.StartNew();
    var id=Guid.NewGuid().ToString("N");var job=Obj("job_id",id,"operation",op,"status","queued");lock(gate)jobs[id]=job;

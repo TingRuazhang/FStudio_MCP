@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from canvas_spec import expand_widgets
-from server import BY_NAME, FStudio, validate, serve
+from server import API_VERSION, BY_NAME, FStudio, validate, serve
 from visible_host import VisibleHost
 
 
@@ -75,6 +75,21 @@ class GenerationTests(unittest.TestCase):
             self.assertFalse(BY_NAME[name]['annotations']['readOnlyHint'])
             self.assertFalse(BY_NAME[name]['annotations']['idempotentHint'])
         self.assertTrue(BY_NAME['fstudio_canvas_snapshot']['annotations']['readOnlyHint'])
+        # 公开版本只保留通用离线预览能力；项目专用动作不能残留在注册表或隐藏服务方法中。
+        for suffix in ('validation_word_constants', 'simulator_navigate', 'simulator_mute'):
+            self.assertNotIn('fstudio_' + suffix, BY_NAME)
+            self.assertFalse(hasattr(FStudio, suffix))
+        # 预览入口不暴露任意进程、窗口或坐标；输出只接受工作区文件，启动只接受编译身份。
+        expected = {
+            'fstudio_simulate_offline': set(),
+            'fstudio_simulate_compiled': {'build_id'},
+            'fstudio_canvas_render': {'file'},
+            'fstudio_simulator_capture': {'file'},
+            'fstudio_simulator_close': set(),
+            'fstudio_simulator_helper_close': set(),
+        }
+        for name, fields in expected.items():
+            self.assertEqual(set(BY_NAME[name]['inputSchema']['properties']), fields)
 
     def test_mcp_protocol_expands_preset_once_and_rejects_duplicates(self):
         """通过真实 stdio 分发链校验预设展开及错误返回，只替换最外侧原生传输。"""
@@ -95,7 +110,12 @@ class GenerationTests(unittest.TestCase):
         with patch('server.sys.stdin', io.StringIO('\n'.join(map(json.dumps,messages)))), patch('server.sys.stdout',output):
             serve(service)
         replies = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertEqual(len(replies[1]['result']['tools']), 73)
+        self.assertEqual(replies[0]['result']['serverInfo']['version'], API_VERSION)
+        self.assertEqual(API_VERSION, '0.5.0')
+        # 工具会持续扩充；核对实际注册名称及唯一性，避免把旧版本数量误当成协议契约。
+        listed = [item['name'] for item in replies[1]['result']['tools']]
+        self.assertEqual(set(listed), set(BY_NAME))
+        self.assertEqual(len(listed), len(set(listed)))
         self.assertFalse(replies[2]['result']['isError'])
         self.assertTrue(replies[3]['result']['isError'])
         service.visible.request.assert_called_once()

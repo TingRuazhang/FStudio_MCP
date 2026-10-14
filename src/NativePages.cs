@@ -266,6 +266,18 @@ namespace FStudioMcp {
    if(op=="page_transmission_remove")return RemovePageTransmission(a);
    if(op=="page_timer_remove")return RemovePageTimer(a);
    if(op=="pages_list")return Obj("project",ProjectFile(),"pages",PageInformation(manager).Select(info=>PageDescription(service,info)).OrderBy(p=>Convert.ToString(p["type"])).ThenBy(p=>Convert.ToInt32(p["id"])).ToArray(),"supported_mutation_kinds",new[]{"Basic"},"execution_mode",ExecutionMode);
+   if(op=="page_open_public"){
+    // 公共页由当前工程原生管理器唯一给出，不接受任意UUID，也不修改页面类型或编号。
+    // 此入口只打开既有公共页；普通page_open/create/delete的Basic和保留页保护保持原样。
+    var publicInformation=Member(manager,"PublicWindow");
+    if(publicInformation==null)throw new InvalidOperationException("The current project has no public page");
+    var publicSettings=Member(publicInformation,"Settings");
+    if(Convert.ToString(Member(publicSettings,"Type"))!="Public")throw new InvalidOperationException("Native PublicWindow identity is inconsistent");
+    Guid publicId=PageUuid(publicSettings);PageFile(publicSettings);
+    PageStatic("Flexem.Studio.HMI.Window.HMIWindowService","OpenHMIWindowById",publicId,false);
+    if(!(bool)CallNative(service,"IsWindowOpened",publicId))throw new InvalidOperationException("Native public page did not open");
+    return Obj("page",PageDescription(service,publicInformation),"show_settings",false,"identity_changed",false);
+   }
    if(op=="page_create"){
     if(a.ContainsKey("kind")&&S(a,"kind")!="Basic")throw new NotSupportedException("Only kind Basic is supported for background page creation");
     string name=PageName(a);var basic=Enum.Parse(Native("Flexem.Studio.Hmi.Window.WindowType"),"Basic");
@@ -386,11 +398,18 @@ namespace FStudioMcp {
      case "Word":dataTypeName="Flexem.Studio.Hmi.Models.Components.Parts.SwitchNew.WordSwitchActions.WordSwitchActionData";break;
      default:throw new ArgumentException("Unsupported action_type: "+actionType);
     }
-    var action=Activator.CreateInstance(Native(dataTypeName));
+    // 当前原生版本的窗口动作只公开DTO构造；使用厂商Default工厂保持字段完整。
+    object action;
+    if(actionType=="WindowOper"){
+     var dto=PageStatic("Flexem.Studio.Components.Parts.SwitchNew.WindowOperSwitchActionDto","Default");
+     action=Activator.CreateInstance(Native(dataTypeName),new object[]{dto});
+    }else action=Activator.CreateInstance(Native(dataTypeName));
     var actionName=action.GetType().FullName;
     NativeSet(action,"ExecutionCondition","Action");
     NativeSet(action,"Action","KeyDown");
-    var capForName=Member(action,"TransferCapacity");
+    // 只有传输动作具有TransferCapacity；导航/普通开关不能读取不存在的属性。
+    var capProperty=action.GetType().GetProperty("TransferCapacity");
+    var capForName=capProperty==null?null:capProperty.GetValue(action,null);
     if(capForName!=null){NativeSet(capForName,"Type","Constant");NativeSet(capForName,"Constant",1);NativeSet(capForName,"Enable",true);}
     var devicesSvc=Member(PageServices(),"DeviceService");
     if(actionType=="DataTransfer"){
@@ -435,7 +454,11 @@ namespace FStudioMcp {
     }
     // 触发地址为编译必需（TriggerAddress 只读，但其对象成员可写）
     var trigger=Member(item,"TriggerAddress");
-    var addrFactory=PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateBit",Member(PageServices(),"DeviceService"));
+    // 当前窗口编号是字值，使用原生本地字寄存器；其他既有位命令沿用位工厂。
+    var devicesForControl=Member(PageServices(),"DeviceService");
+    var addrFactory=controlType=="ReportCurWindowID"
+     ?PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateWord",devicesForControl,Enum.Parse(Native("Flexem.Studio.Hmi.DataType"),"UInt16"),true)
+     :PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateBit",devicesForControl);
     var addrRaw=Member(addrFactory,"Raw");
     NativeSet(trigger,"DeviceId",Member(addrRaw,"DeviceId"));
     NativeSet(trigger,"RegisterId",Member(Member(addrRaw,"RegisterId"),"Id"));

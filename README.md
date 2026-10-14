@@ -6,13 +6,13 @@
 
 > 本项目采用 [MIT 许可证](LICENSE)，允许商用、修改、分发和售卖，须保留版权及许可声明。
 
-## 最新更新 · v2026.10.12
+## 最新更新 · v2026.10.14
 
-- 在 v2026.09.12 已发布的批量接口上改进原生创建、模型访问和任务结果处理，工具总数仍为 73。
-- 加强同类控件编号分配、静态文字校验、属性路径预检和失败回滚；保留快照诊断与批量读取的既有返回约定。
-- 更新 **Fstudio_skills 完整包**，继续提供技能、配套 MCP 源码和本机构建配置脚本。
+- 修复字内位地址转本地位地址的残留模式，补充直接 Modbus RTU 地址绑定及原生数值倍率、限值初始化。
+- 新增编译产物离线预览：核对当前源码和输出哈希后启动官方模拟器，保留记录，不重复编译；截图与进程关闭只作用于已核实归属的离线预览。
+- 完善 **Fstudio_skills 完整包**：补充异步任务续查、宿主版本核对、数值符号/缩放、动态圆环和透明通道等排障与验收说明。
 
-查看 [完整更新说明与升级步骤](CHANGELOG.md)，或前往 [GitHub Release](https://github.com/TingRuazhang/FStudio_MCP/releases/tag/v2026.10.12) 下载源码和技能包。批量静态文字现在要求非空白 `text`，批量创建属性只接受标量；需要分步填写文字或配置复杂对象时使用 `fstudio_canvas_prepare`。
+查看 [完整更新说明与升级步骤](CHANGELOG.md)，或前往 [GitHub Release](https://github.com/TingRuazhang/FStudio_MCP/releases/tag/v2026.10.14) 下载源码和技能包。批量静态文字要求非空白 `text`，批量创建属性只接受标量；需要分步填写文字或配置复杂对象时使用 `fstudio_canvas_prepare`。
 
 ## 功能
 
@@ -22,12 +22,14 @@
 - 配置本地寄存器地址，以及工程中的采样、定时和数据传输模型。
 - 导入图片、检查模型，保存并重新打开工程。
 - 对已保存工程创建快照，运行原生隔离编译，查询或取消任务。
+- 绑定已启用的标准 Modbus RTU 端口，设置原生数值倍率和完整限值模型。
+- 复用当前已保存工程的成功编译归档，启动离线预览并取得真实运行截图。
 
 例如，可以向已连接 MCP 的 AI 提出：
 
 > 创建一个用于学习的电机监控界面，包含标题、启动和停止按钮、状态灯与转速显示。使用本地寄存器，保存到新工程并检查原生编译结果。
 
-当前注册 73 个 MCP 接口，完整工具和参数以 `tools/list` 返回内容为准。批量操作的用法见 [批量生成与回读](docs/batch-generation.md)，具体控件支持情况见下方验证范围。
+当前注册85个唯一MCP工具，完整参数以 `tools/list` 返回内容为准。批量操作的用法见 [批量生成与回读](docs/batch-generation.md)，新地址、数值与离线预览接口见 [原生调用可靠性](docs/native-reliability.md)，具体控件支持情况见下方验证范围。
 
 ## 环境要求
 
@@ -85,13 +87,14 @@ cd FStudio_MCP
 
 ## 操作流程
 
-1. 调用 `fstudio_visible_start` 连接或启动宿主，再创建或打开工作区工程。
+1. 调用 `fstudio_visible_start` 连接或启动宿主。返回 `starting` 后继续查询只读状态；若状态也返回任务ID，等待同一任务完成后再创建或打开工程，不重复启动宿主。
 2. 使用 `fstudio_canvas_snapshot` 读取当前页的控件名称、UUID 和实际边界。创建常用控件时，优先用 `fstudio_canvas_create_many` 一次提交布局与预设；特殊配置仍可使用 `fstudio_canvas_prepare`、模型接口和 `fstudio_canvas_commit`，不用的草稿用 `fstudio_canvas_discard` 清理。
 3. 已知属性用 `fstudio_model_get_many` 批量回读；同一组设置用 `fstudio_model_apply_many`，不同设置用 `fstudio_model_set_many`。属性支持 `Position.Width` 这样的点路径。先检查响应状态：已完成就消费 `result`，尚未完成则用 `fstudio_visible_job` 查询同一 `job_id`，不要重复提交写操作。
 4. 调用 `fstudio_visible_save` 保存工程。模型句柄属于当前会话，重开工程后重新获取。
 5. 调用 `fstudio_build_start`，再用 `fstudio_build_status` 查询。检查 `compiler_success`、`cleanup_complete`、`cleanup_errors` 和产物哈希；取消后也应继续查询至终态。
+6. 需要实际运行验收时，将成功编译的 `build_id` 传给 `fstudio_simulate_compiled`。在离线模拟器中操作页面，等待刷新后用 `fstudio_simulator_capture` 取图；结束后请求关闭模拟窗口，核实退出，再关闭对应辅助进程。
 
-后台页面接口支持非保留的 Basic 页面；离线编辑前应关闭目标工程。编译使用已保存工程的快照，产物位于 `artifacts/isolated-jobs`，不会覆盖编辑器工程。
+后台页面接口支持非保留的 Basic 页面，公共页使用独立的 `fstudio_public_page_open`；离线文件编辑前应关闭目标工程。隔离编译使用已保存工程的快照，产物位于 `artifacts/isolated-jobs`，不会覆盖编辑器工程。`simulate_compiled` 会把已核实输出安装到当前工程 `Bin`，然后启动离线预览；两者是独立操作。
 
 批量创建只负责新增控件，遇到已有名称会拒绝，不会自动更新。继续已有工程前先按名称查询并取得当前句柄。文字可能按原生字体规则调整尺寸，需检查 `actual_bounds`、`bounds_adjusted` 和警告；布局快照不能代替截图与实际运行检查。
 
@@ -103,13 +106,13 @@ cd FStudio_MCP
 
 [Fstudio_skills](skills/fstudio-skills/SKILL.md) 将工艺/原型拆解、公共页面所有权、MCP 工具选择、批量制作和分层验收连成可执行流程，适用于不同 HMI 工程。技能中的 `check_layout.py` 只读检查快照的尺寸、对齐、间距和公共组件禁入名单，不修改工程或调用硬件。
 
-推荐下载 Release 中的 [Fstudio_skills.zip](https://github.com/TingRuazhang/FStudio_MCP/releases/download/v2026.10.12/Fstudio_skills.zip)：解压后的 `fstudio-skills` 为根目录，`mcp/` 位于技能内部，包含独立运行所需源码。按 [内置 MCP 接入说明](skills/fstudio-skills/references/bundled-mcp.md) 构建并接入客户端；仅加载技能不会自动注册 MCP。
+推荐下载 Release 中的 [Fstudio_skills.zip](https://github.com/TingRuazhang/FStudio_MCP/releases/download/v2026.10.14/Fstudio_skills.zip)：解压后的 `fstudio-skills` 为根目录，`mcp/` 位于技能内部，包含独立运行所需源码。按 [内置 MCP 接入说明](skills/fstudio-skills/references/bundled-mcp.md) 构建并接入客户端；仅加载技能不会自动注册 MCP。
 
 已有独立 MCP 连接时，也可只使用仓库的 `skills/fstudio-skills` 技能目录。Codex 的技能目录为 `~/.codex/skills/fstudio-skills`。调用示例：“使用 $fstudio-skills 根据原型增量修改触摸屏，复用公共页面，并检查布局与原生交互。”详细参考按需加载，无需把整个工具或属性目录发给 AI。
 
 仓库保留现有 MCP 源码结构，技能在 `skills/` 中维护；运行 `python package-skill.py` 可在 `artifacts/skill-delivery/Fstudio_skills.zip` 生成完整发布包。升级时保留原工作区工程与配置，更新源码和技能后重新构建、安装，并重新启动 MCP 服务与 FStudio 宿主；详见 [更新已有安装](skills/fstudio-skills/references/bundled-mcp.md#更新已有安装)。完整包不附带厂商资源、还原源码或用户工程。
 
-## 与旧逐项流程的实测对比
+## v2026.10.12 与旧逐项流程的实测对比
 
 发布准备前在同一环境串行测试，固定基线为更早的逐控件流程提交 `3a03219`，每轮创建 24 个矩形并读取布局，共 3 轮。下表为均值，**不是相对于 v2026.09.12 已发布批量接口的提速结果**：
 
@@ -126,7 +129,7 @@ cd FStudio_MCP
 
 ## 验证范围与已知限制
 
-历史验证在 FStudio `3.0.15685.0`、F010 工程上覆盖原有 69 个 MCP 接口：68 个完成代表性成功调用，1 个兼容入口按设计拒绝；这 69 个接口经过非法参数和连接复用检查。该记录不代表目前的 73 个接口已全部完成同范围实机验证。
+历史验证在 FStudio `3.0.15685.0`、F010 工程上覆盖原有 69 个 MCP 接口：68 个完成代表性成功调用，1 个兼容入口按设计拒绝；这 69 个接口经过非法参数和连接复用检查。该记录不代表当前全部接口已完成同范围实机验证。
 
 52 种绘图控件中，42 种通过创建、配置、提交、保存、重开及隔离编译，并通过产物与源工程保护检查。其余结果如下：
 
@@ -148,7 +151,7 @@ cd FStudio_MCP
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-发布前完整重建成功，统一测试入口的 16 项测试全部通过，包括 stdio 协议、预设与参数、任务终态、观察期限和 2 项完整 ZIP 分发检查；其中真实 C# 模型访问覆盖 26 个场景，绘图契约检查覆盖 55 个场景。完整技能包已从独立目录解压并运行内置服务的 `--help`。绘图契约检查需要先构建当前宿主 DLL，并使用 PowerShell 7；缺少依赖时该项会跳过。
+本轮统一测试包含原有协议、预设、模型与分发回归，以及新增倍率参数和归档预览清单检查；实际结果见 [更新日志](CHANGELOG.md) 和 [验证范围](docs/native-reliability.md#验证范围)。真实 C# 模型访问覆盖 26 个场景，绘图契约覆盖 55 个检查。绘图契约检查需要先构建当前宿主 DLL，并使用 PowerShell 7；缺少依赖时该项会跳过，不能把跳过算作通过。
 
 真实宿主对照测试会分别启动私有桌面上的 FStudio，新建独立测试工程。脚本默认从固定 Git 提交 `3a03219` 编译旧逐项基线，从当前工作树编译测量版本；两次应在同一环境串行执行：
 

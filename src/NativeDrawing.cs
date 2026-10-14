@@ -28,7 +28,13 @@ namespace FStudioMcp {
    if(handle==IntPtr.Zero)throw new InvalidOperationException("Native canvas window handle initialization failed");
    bool minimized=IsIconic(handle);
    // 已显示过的窗口用 SW_SHOWNOACTIVATE 恢复尺寸，保持当前应用焦点。
-   if(minimized||!IsWindowVisible(handle))ShowWindow(handle,4);
+   if(minimized||window.WindowState==WindowState.Minimized||!IsWindowVisible(handle)){
+    // WPF 的 WindowState 也必须复位；只调用 Win32 ShowWindow 会被绑定状态重新最小化。
+    // 保持 ShowActivated=false，恢复画布时不抢占用户当前应用的键盘焦点。
+    bool activate=window.ShowActivated;
+    try{window.ShowActivated=false;window.WindowState=WindowState.Maximized;ShowWindow(handle,4);}
+    finally{window.ShowActivated=activate;}
+   }
    return Obj("visible",IsWindowVisible(handle),"minimized",IsIconic(handle),"was_minimized",minimized,"handle_initialized",initialized,"foreground_preserved",before==GetForegroundWindow(),"settings_operation_dispatched",false,"mouse_input_used",false);
   }
   sealed class DrawingDraft {public object Model, ViewModel, Tool, Page, CommittedView;}
@@ -114,24 +120,221 @@ namespace FStudioMcp {
    if(Double.IsNaN(number)||Double.IsInfinity(number)||number<0||number>UInt32.MaxValue||number!=Math.Truncate(number))throw new ArgumentException("address must be an unsigned integer");
    var raw=legacy?address:Member(address,"Raw");
    if(raw==null)throw new ArgumentException("Address Raw is not initialized");
-   foreach(var target in new[]{address,raw}.Distinct())foreach(var flag in new[]{"IsLabelAddress","UseIndex","UseStationAddress","UseStationReference","UseTagByteReference","UseOffset","UseWordRegisterAsBit"}){
+   // 字内位是可转换的直接地址形式，不能与标签/索引/变量站号等高级引用混为一谈。
+   // 后续使用本地 CreateBit/CreateWord 的原生默认值清理其标志，允许 RTU 字内位安全切回 LB。
+   // 旧模型的配方设备通过 FormulaRegisterId 查找寄存器；标签设备也不能当作普通数字地址转换。
+   // 仅检查启用标志，不清除休眠的配方/引用对象，避免更改与本次转换无关的配置。
+   foreach(var target in new[]{address,raw}.Distinct())foreach(var flag in new[]{"IsLabelAddress","UseIndex","UseStationAddress","UseStationReference","UseTagByteReference","UseOffset","UseAddressReference","IsCombinedBits","IsVariableTagDevice","IsTagDevice","IsRecipeDevice","IsFormula"}){
     var property=target.GetType().GetProperty(flag);
     if(property!=null&&property.PropertyType==typeof(bool)&&(bool)property.GetValue(target,null))throw new ArgumentException("Configure local address requires a direct address; advanced option is active: "+flag);
    }
    string kind=Convert.ToString(Member(address,"AddressType"));
    if(kind!="Bit"&&kind!="Word")throw new ArgumentException("Unsupported native address type: "+kind);
+   if(kind=="Word"&&(bool)Member(raw,legacy?"UseByteReference":"UseWordRegisterAsBit"))
+    throw new ArgumentException("A Word address cannot be normalized from an active holding-register-bit mode");
    var devices=Member(PageServices(),"DeviceService");
    var source=kind=="Bit"?PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateBit",devices):PageStatic("Flexem.Studio.Hmi.Models.Address.AddressData","CreateWord",devices,Member(raw,"DataType"),true);
    var sourceRaw=Member(source,"Raw");var register=Member(sourceRaw,"RegisterId");
-   var described=(Dictionary<string,object>)DescribeOwned(raw,scope);string rawRef=S(described,"$ref");
-   var edits=new[]{Obj("ref",rawRef,"member","DeviceId","value",Member(sourceRaw,"DeviceId")),Obj("ref",rawRef,"member","RegisterId","value",legacy?Member(register,"Id"):register),Obj("ref",rawRef,"member","MainAddress","value",Convert.ToUInt32(number))};
+   object dataType=Member(raw,"DataType");string id=S(a,"ref"),prefix=legacy?"":"Raw.";
+   // 始终通过地址根路径写入：若某个 setter 替换 Raw，统一批量入口会检测到，而不是继续修改脱离的旧对象。
+   // UseByteReference/UseWordRegisterAsBit 必须恢复为本地工厂的值，否则 LB 会继续被解释为 4X 字内位。
+   var edits=new[]{
+    // 先切换字内位模式：旧模型的该属性规则会刷新寄存器，显式官方 RegisterId 必须随后写入以免被覆盖。
+    Obj("ref",id,"member",prefix+(legacy?"UseByteReference":"UseWordRegisterAsBit"),"value",Member(sourceRaw,"UseWordRegisterAsBit")),
+    Obj("ref",id,"member",prefix+"DeviceId","value",Member(sourceRaw,"DeviceId")),
+    Obj("ref",id,"member",prefix+"RegisterId","value",legacy?Member(register,"Id"):register),
+    Obj("ref",id,"member",prefix+"MainAddress","value",Convert.ToUInt32(number)),
+    Obj("ref",id,"member",prefix+(legacy?"StationNO":"StationNo"),"value",Member(sourceRaw,"StationNo")),
+    Obj("ref",id,"member",prefix+"SubAddress","value",Member(sourceRaw,"SubAddress")),
+    Obj("ref",id,"member",prefix+"SubAddressIndex","value",Member(sourceRaw,"SubAddressIndex")),
+    Obj("ref",id,"member",prefix+"DataType","value",dataType)
+   };
    var changed=(Dictionary<string,object>)SetModelProperties(Obj("changes",edits));
-   // Legacy AddressInfo keeps persisted display text and CSLA validity derived
-   // from Raw. A prior AddressType/IsCombinedBits change can leave those values
-   // stale even though DeviceId/RegisterId/MainAddress are already correct.
+   // 旧 AddressInfo 还保存派生缩写与规则结果；设备、寄存器及字内位模式改变后同步刷新。
    if(legacy){CallNative(address,"UpdateAbbreviation");CallNative(address,"UpdateDeviceAbbreviation");CallNative(address,"CheckRules");}
+   // 回读必须重新解析当前子模型。写入前取得的 Raw 可能已被原生 setter 替换，不能用旧引用证明成功。
+   raw=legacy?address:Member(address,"Raw");
    var actualRegister=Member(raw,"RegisterId");
    return Obj("model",DescribeOwned(address,scope),"address_type",kind,"device_id",Convert.ToString(Member(raw,"DeviceId")),"register_id",legacy?actualRegister:Member(actualRegister,"Id"),"address",Member(raw,"MainAddress"),"data_type",Convert.ToString(Member(raw,"DataType")),"native_undo_transaction",changed["native_undo_transaction"],"persistence","save_project_to_persist","hardware_io",false);
+  }
+  /// <summary>校验 RTU 工具的整数参数；拒绝布尔、字符串、小数和非有限数，避免宽松转换截断地址。</summary>
+  static uint ModbusRtuInteger(Dictionary<string,object>a,string key,uint minimum,uint maximum){
+   object supplied;if(!a.TryGetValue(key,out supplied)||supplied==null||supplied is bool||supplied is string)
+    throw new ArgumentException(key+" must be an integer in "+minimum+".."+maximum);
+   double number=Convert.ToDouble(supplied);
+   if(Double.IsNaN(number)||Double.IsInfinity(number)||number!=Math.Truncate(number)||number<minimum||number>maximum)
+    throw new ArgumentException(key+" must be an integer in "+minimum+".."+maximum);
+   return Convert.ToUInt32(number);
+  }
+  /// <summary>
+  /// 将当前页或未提交草稿中的直接地址绑定到已启用的 Modbus RTU 主站端口。
+  /// 只修改原生模型，不访问串口或设备；设备必须属于当前工程，且原生驱动确实提供 4X 字寄存器。
+  /// 新式地址沿用原生地址构造器：以驱动的组合 ID 和字宽构造完整 RegisterIdentity；旧式地址使用组合 ID 65540。
+  /// </summary>
+  /// <param name="a">ref、device_id、station(1..247)、address(1..65536)，位指示地址另外提供 bit(0..15)。</param>
+  /// <param name="view">当前原生设计视图，用于验证归属和沿用页面撤销事务。</param>
+  /// <returns>实际回读的设备、站号、4X 地址、位及数据类型；保存由调用方统一处理。</returns>
+  static object ConfigureModbusRtuAddress(Dictionary<string,object>a,object view){
+   var address=Ref(a);string type=address.GetType().FullName;
+   bool legacy=type=="Flexem.Studio.Models.HMI.AddressInfo";
+   if(!legacy&&type!="Flexem.Studio.Hmi.Models.Address.AddressData")throw new ArgumentException("Expected an AddressInfo or AddressData handle");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))
+    throw new ArgumentException("Address must belong to the active page or its draft");
+   Guid deviceId;
+   if(!a.ContainsKey("device_id")||!Guid.TryParse(S(a,"device_id"),out deviceId)||deviceId==Guid.Empty)
+    throw new ArgumentException("device_id must be a non-empty current-project RTU device UUID");
+   uint station=ModbusRtuInteger(a,"station",1,247),main=ModbusRtuInteger(a,"address",1,65536);
+   bool asBit=a.ContainsKey("bit");uint bit=asBit?ModbusRtuInteger(a,"bit",0,15):0;
+   var raw=legacy?address:Member(address,"Raw");if(raw==null)throw new ArgumentException("Address Raw is not initialized");
+   // 保留控件原来的位/字用途，不把数值输入转换成指示器，也不把位指示转换成数值地址。
+   string kind=Convert.ToString(Member(address,"AddressType"));
+   if(kind!=(asBit?"Bit":"Word"))throw new ArgumentException(asBit?"bit requires an existing Bit address":"A Bit address requires an explicit holding-register bit");
+   // 高级引用会改变实际地址含义；此专用入口拒绝它们，不能静默清除用户配置。
+   foreach(var target in new[]{address,raw}.Distinct())foreach(string flag in new[]{"IsLabelAddress","UseIndex","UseStationAddress","UseStationReference","UseTagByteReference","UseOffset","UseAddressReference","IsCombinedBits","IsVariableTagDevice","IsFormula"}){
+    var property=target.GetType().GetProperty(flag);
+    if(property!=null&&property.PropertyType==typeof(bool)&&(bool)property.GetValue(target,null))
+     throw new ArgumentException("RTU configuration requires a direct address; advanced option is active: "+flag);
+   }
+   // 依据当前工程现有物理端口查找身份，不创建端口，也不接受其他工程或已禁用的设备 UUID。
+   var ports=(IEnumerable)Member(Member(Member(CurrentProject(),"HMIInfo"),"LocalConnectionInfo"),"Ports");
+   var matches=ports.Cast<object>().Where(p=>(Guid)Member(p,"DeviceId")==deviceId).ToArray();
+   if(matches.Length!=1)throw new ArgumentException("RTU device identity must match exactly one current-project serial port");
+   var port=matches[0];
+   if(!(bool)Member(port,"IsUsed")||Convert.ToInt32(Member(port,"PLCID"))!=4||Convert.ToString(Member(port,"PLCName"))!="Modbus RTU"||Convert.ToString(Member(port,"Mode"))!="Master")
+    throw new ArgumentException("The serial port must be enabled with Modbus RTU PLCID 4 in Master mode");
+   if((bool)Member(port,"UseAddressStation"))throw new ArgumentException("The RTU port must use fixed station numbers instead of an address-controlled station");
+   // 读取已安装驱动的公开配置，证实 4X 为 Word，防止错误使用线圈或其他驱动的寄存器 ID。
+   var configuration=CallNative(Member(PageServices(),"DeviceConfigurationService"),"GetSerialPlcConfiguration",4);
+   if(configuration==null||Convert.ToInt32(Member(configuration,"ID"))!=4||Convert.ToString(Member(configuration,"Name"))!="Modbus RTU")
+    throw new InvalidOperationException("The current project has no matching native Modbus RTU configuration");
+   var width=Enum.Parse(Native("Flexem.Studio.Hmi.Device.Configuration.AddressWidthType"),"Word");
+   var register=CallNative(configuration,"GetRegister",(uint)4,width);
+   const uint combinedRegisterId=65540;
+   if(register==null||Convert.ToUInt32(Member(register,"Id"))!=combinedRegisterId||Convert.ToString(Member(register,"Name"))!="4X"||Convert.ToString(Member(register,"AddressWidth"))!="Word")
+    throw new InvalidOperationException("Native Modbus RTU 4X Word register verification failed");
+   // AddressRawData 的原生构造器将 CombineRegisterId 的结果直接传入 RegisterIdentity(id,width)。
+   // FromCombinedRegisterId 是另一种解码工厂，会将 65540 拆成 Id=4；该身份不能通过实际数值控件编译。
+   // 所以此处保留官方 IRegister.Id=65540，与原生地址选择器写入和已有效的本地 65791 身份一致。
+   object registerValue=legacy?(object)combinedRegisterId:Activator.CreateInstance(Native("Flexem.Studio.Hmi.Device.Configuration.RegisterIdentity"),new object[]{Convert.ToUInt32(Member(register,"Id")),width});
+   if(!legacy&&(Convert.ToUInt32(Member(registerValue,"Id"))!=combinedRegisterId||Convert.ToString(Member(registerValue,"AddressWidthType"))!="Word"))
+    throw new InvalidOperationException("Native 4X RegisterIdentity constructor returned an unexpected identity");
+   object dataType=Member(raw,"DataType");
+   string addressRef=S(a,"ref"),prefix=legacy?"":"Raw.";
+   // 全部字段先由统一批量入口预检再写入。附着页面使用一个原生撤销组；草稿失败恢复原值。
+   // Raw.DataType 最后回写原值，保留现有原始地址类型；AddressData 顶层的独立 DataType 完全不修改。
+   // 新式使用地址根的 Raw.* 路径，让批量入口能发现前序 setter 是否替换了 Raw 子对象。
+   var edits=new[]{
+    Obj("ref",addressRef,"member",prefix+"DeviceId","value",deviceId),
+    Obj("ref",addressRef,"member",prefix+(legacy?"StationNO":"StationNo"),"value",station),
+    Obj("ref",addressRef,"member",prefix+"RegisterId","value",registerValue),
+    Obj("ref",addressRef,"member",prefix+"MainAddress","value",main),
+    Obj("ref",addressRef,"member",prefix+"SubAddress","value",bit),
+    Obj("ref",addressRef,"member",prefix+(legacy?"UseByteReference":"UseWordRegisterAsBit"),"value",asBit),
+    Obj("ref",addressRef,"member",prefix+"DataType","value",dataType)
+   };
+   var changed=(Dictionary<string,object>)SetModelProperties(Obj("changes",edits));
+   // 旧模型持久化显示缩写与规则结果；与既有本地地址入口保持相同的原生刷新流程。
+   if(legacy){CallNative(address,"UpdateAbbreviation");CallNative(address,"UpdateDeviceAbbreviation");CallNative(address,"CheckRules");}
+   var actualRegister=Member(raw,"RegisterId");
+   return Obj("model",DescribeOwned(address,scope),"address_model",legacy?"AddressInfo":"AddressData","address_type",kind,
+    "device_id",Convert.ToString(Member(raw,"DeviceId")),"port",Convert.ToString(Member(port,"PortName")),
+    "station",Member(raw,legacy?"StationNO":"StationNo"),"register_id",combinedRegisterId,
+    "native_register_id",legacy?actualRegister:Member(actualRegister,"Id"),"register_width","Word","address",Member(raw,"MainAddress"),
+    "bit",asBit?Member(raw,"SubAddress"):null,"word_as_bit",Member(raw,legacy?"UseByteReference":"UseWordRegisterAsBit"),
+    "data_type",Convert.ToString(Member(raw,"DataType")),"native_undo_transaction",changed["native_undo_transaction"],
+    "persistence","save_project_to_persist","hardware_io",false);
+  }
+  /// <summary>
+  /// 以原生 DTO 构造完整 Numeric Zoom 子模型，配置当前页或草稿数值控件的倍率和偏移。
+  /// 两个数值运算开关独立，需一并启用；DecimalValue 保持原值，不推断它的运行时小数语义。
+  /// 本接口仅改模型，是否与显示小数位叠加必须在离线验证工程中以已知原始值验证。
+  /// </summary>
+  static object ConfigureNumericZoom(Dictionary<string,object>a,object view){
+   var model=Ref(a);
+   if(model.GetType().FullName!="Flexem.Studio.Components.Parts.NumericCharPart.NumericCharInfo")throw new ArgumentException("Expected a native NumericCharInfo");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))
+    throw new ArgumentException("Numeric control must belong to the active page or its draft");
+   var normal=Member(model,"NormalData");var numericOperator=Member(normal,"NumericOperator");
+   if(numericOperator==null)throw new InvalidOperationException("The numeric operator parent is not initialized");
+   var values=new Dictionary<string,double>();
+   foreach(string key in new[]{"gain","offset"}){
+    object supplied;if(!a.TryGetValue(key,out supplied)||supplied==null||supplied is bool||supplied is string)throw new ArgumentException(key+" must be a finite number");
+    double value=Convert.ToDouble(supplied);if(Double.IsNaN(value)||Double.IsInfinity(value))throw new ArgumentException(key+" must be a finite number");
+    values[key]=value;
+   }
+   object scaling;if(!a.TryGetValue("is_decimal_scaling",out scaling)||!(scaling is bool))throw new ArgumentException("is_decimal_scaling must be an explicit boolean");
+   const string prefix="Flexem.Studio.Components.Parts.NumericCharNewPart.";
+   var dto=Activator.CreateInstance(Native(prefix+"NumericOperatorSettingDto"));
+   var zoom=Activator.CreateInstance(Native(prefix+"ZoomDto"));
+   foreach(string field in new[]{"GainValue","OffsetValue"}){
+    var variable=Activator.CreateInstance(Native("Flexem.Studio.Components.Common.VariableDto"));
+    NativeSet(variable,"VariableType","Constant");NativeSet(variable,"IsConstant",true);NativeSet(variable,"Constant",values[field=="GainValue"?"gain":"offset"]);
+    NativeSet(zoom,field,variable);
+   }
+   NativeSet(zoom,"IsDecimalScaling",scaling);NativeSet(dto,"ComputationType","Zoom");NativeSet(dto,"Zoom",zoom);
+   var setting=Activator.CreateInstance(Native("Flexem.Studio.Hmi.Models.Components.Parts.NumericCharPart.NumericSet.NumericOperatorSettingData"),new[]{dto});
+   // 完整子模型一次赋值，无需临时切换运算类型；不会留下 GainValue 或 OffsetValue 为空的半成品。
+   string id=S(a,"ref");
+   var changes=new[]{Obj("ref",id,"member","NormalData.NumericOperator.NumericOperator","value",setting),
+    Obj("ref",id,"member","NormalData.NumericOperator.UseNumericalOperator","value",true),
+    Obj("ref",id,"member","NormalData.UseNumericalOperator","value",true)};
+   var changed=(Dictionary<string,object>)SetModelProperties(Obj("changes",changes));
+   return Obj("model",DescribeOwned(model,scope),"computation","Zoom","gain",values["gain"],"offset",values["offset"],
+    "is_decimal_scaling",scaling,"decimal_digits",Member(normal,"DecimalValue"),"native_undo_transaction",changed["native_undo_transaction"],
+    "hardware_io",false,"persistence","save_project_to_persist","runtime_scaling_verified",false);
+  }
+  /// <summary>
+  /// 以完整原生 DTO 修复数值上下限子对象。原生构造及 SaveTo 在 UseLimit=false 时省略 Min/Max，
+  /// 因此本初始化器保留 UseLimit=true，关闭溢出取值和闪烁，避免空子模型再次导致窗口编译异常。
+  /// 用户先选择 DataType 再调用本方法；本方法不改读地址、数据类型或数值倍率。
+  /// </summary>
+  static object ConfigureNumericLimits(Dictionary<string,object>a,object view){
+   var model=Ref(a);
+   if(model.GetType().FullName!="Flexem.Studio.Components.Parts.NumericCharPart.NumericCharInfo")throw new ArgumentException("Expected a native NumericCharInfo");
+   var scope=OwningScope(S(a,"ref"));var draft=scope as DrawingDraft;
+   if(scope==null||(draft==null&&!Object.ReferenceEquals(scope,view))||(draft!=null&&!Object.ReferenceEquals(draft.Page,Member(view,"Model"))))
+    throw new ArgumentException("Numeric control must belong to the active page or its draft");
+   object used;
+   if(!a.TryGetValue("use_limit",out used)||!(used is bool)||!(bool)used)
+    throw new ArgumentException("use_limit must be true: native UseLimit=false omits MinLimit/MaxLimit during construction and persistence");
+   var bounds=new Dictionary<string,double>();
+   foreach(string key in new[]{"min","max"}){
+    object supplied;if(!a.TryGetValue(key,out supplied)||supplied==null||supplied is bool||supplied is string)throw new ArgumentException(key+" must be a finite number");
+    double number=Convert.ToDouble(supplied);if(Double.IsNaN(number)||Double.IsInfinity(number))throw new ArgumentException(key+" must be a finite number");
+    bounds[key]=number;
+   }
+   if(bounds["min"]>bounds["max"])throw new ArgumentException("min must not exceed max");
+   var parents=new List<Tuple<string,object>>();
+   foreach(string name in new[]{"NormalData","NumericSetingData"}){
+    var property=model.GetType().GetProperty(name);
+    if(property==null||property.GetGetMethod()==null)continue;
+    var parent=Member(model,name);
+    // 某些版本旧名与新名是同一模型别名，必须去重，不能对同一原生属性重复批量写入。
+    if(parent!=null&&parent.GetType().GetProperty("NumericLimit")!=null&&!parents.Any(p=>Object.ReferenceEquals(p.Item2,parent)))parents.Add(Tuple.Create(name,parent));
+   }
+   if(parents.Count==0)throw new InvalidOperationException("The numeric model has no supported limit parent");
+   var changes=new List<object>();var paths=new List<string>();
+   foreach(var parent in parents){
+    var dto=Activator.CreateInstance(Native("Flexem.Studio.Components.Common.NumericLimit.NumericLimitDto"));
+    NativeSet(dto,"UseLimit",true);
+    foreach(string flag in new[]{"OverflowMinValue","OverflowMaxValue","OverflowMinBlink","OverflowMaxBlink"})NativeSet(dto,flag,false);
+    foreach(string field in new[]{"MinLimit","MaxLimit"}){
+     var variable=Activator.CreateInstance(Native("Flexem.Studio.Components.Common.VariableDto"));
+     NativeSet(variable,"VariableType","Constant");NativeSet(variable,"IsConstant",true);
+     // 保留调用方数值对象的类型；不构造多余的变量地址，也不留下没有 Raw 的占位地址。
+     NativeSet(variable,"Constant",a[field=="MinLimit"?"min":"max"]);NativeSet(variable,"Variable",null);
+     NativeSet(dto,field,variable);
+    }
+    var limit=Activator.CreateInstance(Native("Flexem.Studio.Hmi.Models.Components.Common.NumericLimit.NumericLimitData"),new[]{dto});
+    if(Member(limit,"MinLimit")==null||Member(limit,"MaxLimit")==null)throw new InvalidOperationException("Native numeric limit construction left empty bounds");
+    string path=parent.Item1+".NumericLimit";paths.Add(path);changes.Add(Obj("ref",S(a,"ref"),"member",path,"value",limit));
+   }
+   var changed=(Dictionary<string,object>)SetModelProperties(Obj("changes",changes.ToArray()));
+   return Obj("model",DescribeOwned(model,scope),"min",a["min"],"max",a["max"],"use_limit",true,
+    "overflow_value",false,"overflow_blink",false,"initialized_paths",paths.ToArray(),"native_undo_transaction",changed["native_undo_transaction"],
+    "hardware_io",false,"persistence","save_project_to_persist");
   }
   static object ConfigureBitSwitch(Dictionary<string,object>a,object view) {
    var model=Ref(a);
@@ -215,6 +418,9 @@ namespace FStudioMcp {
    if(op=="drawing_state")return Obj("project",ProjectFile(),"page",DescribeOwned(page,view),"graphics",DescribeOwned(Member(page,"Graphicses"),view),"view",Describe(view),"dirty",Member(view,"IsDirty"),"draft_count",drawingDrafts.Count,"drafts",drawingDrafts.Select(d=>Obj("draft_id",d.Key,"model",Describe(d.Value.Model))).ToArray(),"execution_mode","background_with_live_canvas");
    if(op=="drawing_configure_bit_switch")return ConfigureBitSwitch(a,view);
    if(op=="drawing_configure_local_address")return ConfigureLocalAddress(a,view);
+   if(op=="drawing_configure_modbus_rtu_address")return ConfigureModbusRtuAddress(a,view);
+   if(op=="drawing_configure_numeric_zoom")return ConfigureNumericZoom(a,view);
+   if(op=="drawing_configure_numeric_limits")return ConfigureNumericLimits(a,view);
    if(op=="drawing_configure_trend")return ConfigureTrendSampling(a,view);
    if(op=="drawing_remove_graphic")return RemoveCanvasGraphic(a,view,page);
    if(op=="drawing_prepare"){
